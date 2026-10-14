@@ -1,0 +1,2 @@
+{"id":"X-ORCH","title":"orchestrator graph engine suite","cmd":["node","--test","test/graph.test.mjs"],"cwd":"scripts/orchestrator","expectExit":0}
+{"id":"X-LEARN","title":"learning engine suite","cmd":["node","--test","test/learning.test.mjs"],"cwd":"learning","expectExit":0}

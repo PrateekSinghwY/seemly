@@ -14,7 +14,7 @@ Site-agnostic: nothing here names a target. A build's data lives in its own
 |---|---|---|---|
 | 0 | skill under git, baseline commit | `.gitignore` | done 2026-10-14 (local; remote pending) |
 | 1 | graph engine: format, dedupe, templates, priority queue, shortest path, build order, loops | `heap.mjs` `algorithms.mjs` `graph.mjs` `store.mjs` `cli.mjs` | done 2026-10-14, 16 tests |
-| L | learning engine: lesson store, escalation ladder, per-node lesson selection, eval runner, scorecard, fix-commit miner | `../learning/` | see `../learning/README.md` |
+| L | learning engine: lesson store, escalation ladder, per-node lesson selection, eval runner, scorecard, fix-commit miner | `../../learning/` | done 2026-10-14, 11 tests; see `learning/README.md` |
 | 2 | live diagram: artifact drawing the graph from `events.jsonl` | `live.mjs` + artifact | next |
 | 3 | explore-only coordinator: pop, capture, inventory, push children, until closed | `run.mjs` + Workflow script | |
 | 4 | build workers, one at a time in build order | `run.mjs` build phase | |

@@ -9,6 +9,10 @@ with the step they landed on) and the build's `discovery/LESSONS.md`,
 `discovery/ASSUMPTIONS.md`, `discovery/tool-fallbacks.md`. Output: edits to this skill,
 each citing its source, plus a printed diff for the human.
 
+Steps 1 to 3 and Promote run through the learning engine (`learning/README.md`):
+`record` each item, `mine` the build's fix commits, `review` for promote / escalate / stale,
+`merge --from` the build inbox at promote, and `evals` before any skill change is kept.
+
 ## Step 1: collect
 
 Copy the build's `LESSONS.md` and `ASSUMPTIONS.md` into `corrections/<build>/` beside
