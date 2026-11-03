@@ -98,6 +98,242 @@ Tool split by strength: Chrome (your real profile) for discovery and behaviour;
 Playwright (persistent profile, writes to disk, CDP-only calls) for anything that must
 be byte-exact. Both must reach the same edition; preflight enforces it.
 
+## End to end: the three graphs, with a worked example
+
+seemly is three graphs run one after another, each feeding the next:
+
+| # | graph | what a node is | what an edge is | algorithm | code |
+|---|---|---|---|---|---|
+| 1 | **Surface graph** (explore) | one screen in one state: a page, a modal, an open menu, a selected tab | one interaction: click, hover, keyboard, scroll, redirect, navigation, write | priority queue (indexed heap), dedupe, template clustering, multi-source Dijkstra, BFS depth relaxation, Tarjan | `scripts/orchestrator/graph.mjs` `heap.mjs` `algorithms.mjs` `explore.mjs` |
+| 2 | **Build graph** (build) | one build unit: the shell, a module archetype, a page template | "needs": a template needs the shell and its modules | Kahn's topological sort, cycle named by Tarjan | `build.mjs` |
+| 3 | **Learning graph** (improve) | one lesson | the ladder: prose → checklist → gate → code | dedupe, promote at 3 builds, escalate on recurrence, retire when stale | `learning/lessons.mjs` |
+
+```mermaid
+flowchart LR
+    I[Intake<br/>TARGET + SCOPE] --> P[Preflight]
+    P --> S[Snapshot T0<br/>Playwright + CDP]
+    S --> G1[(1 Surface graph<br/>explore until frontier empty)]
+    G1 --> G2[(2 Build graph<br/>units in dependency order)]
+    G2 --> B[Build unit by unit]
+    B --> V[Verify<br/>structure, style, pixels, traces]
+    V --> RL[RL environment<br/>reset, state, actions, grader]
+    V -- corrections, failures --> G3[(3 Learning graph<br/>lessons)]
+    G3 -- select lessons per unit --> B
+```
+
+### The worked example
+
+A tiny target app, `https://tasks.example.com`:
+
+```
+/home            dashboard with a "Tasks" link and a "New task" button
+/tasks           list of tasks, tabs "Open" | "Done", each row links to /tasks/<id>
+/tasks/42        one task, with a "Delete" button
+"New task"       a modal with a form and a "Save" button
+```
+
+### Graph 1: exploring the surface graph
+
+**A node is a screen in a state.** Its id is `sha1(canonical URL, state, DOM skeleton)`.
+The canonical URL drops `utm_*`, `gclid` and the fragment and sorts the query, so
+`/tasks?b=2&a=1#top` and `/tasks?a=1&b=2` are the same node. **Dedupe:** reaching a known
+node again adds an edge, not a node.
+
+The walk is a loop over a priority queue:
+
+```mermaid
+flowchart TD
+    A[frontier = entry nodes] --> B{frontier empty<br/>and nothing expanding?}
+    B -- yes --> Z[graph closed: isClosed]
+    B -- no --> C[next: pop best node<br/>mark expanding]
+    C --> D[reach it by its replay route<br/>Dijkstra, cheapest clicks]
+    D --> E[capture: screenshot, DOM, AX tree,<br/>every JSON response, inventory]
+    E --> F[fire every element once]
+    F --> H{what happened?}
+    H -- URL changed --> N1[navigation edge]
+    H -- new floating root --> N2[modal / menu node]
+    H -- skeleton changed in place --> N3[state node: tab, row]
+    H -- a write request --> N4[aborted, queued in<br/>pending-writes.jsonl]
+    H -- nothing --> N5[inert, recorded]
+    N1 & N2 & N3 --> K{node id already in graph?}
+    K -- yes --> L[add edge only: dedupe]
+    K -- no --> M[add node, classify template,<br/>push to frontier]
+    L & M & N4 & N5 --> Q[mark closed, save graph.json]
+    Q --> B
+```
+
+For the example app the walk discovers:
+
+```mermaid
+flowchart LR
+    home["/home<br/>entry, depth 0"] -- click Tasks --> tasks["/tasks<br/>depth 1"]
+    home -- click New task --> modal["New task modal<br/>depth 1"]
+    tasks -- click tab Done --> done["/tasks (Done tab)<br/>state node"]
+    tasks -- click row --> t42["/tasks/42<br/>depth 2"]
+    tasks -- click row --> t43["/tasks/43<br/>same template as 42"]
+    t42 -- navigation back --> tasks
+    modal -. write: Save .-> saved["after Save<br/>held: write edge"]
+    t42 -. write: Delete .-> del["after Delete<br/>held: write edge"]
+```
+
+- **Templates.** `/tasks/42` and `/tasks/43` have different text but the same skeleton.
+  Similarity is weighted Jaccard over tag-path counts, `sum(min) / sum(max)`. At ≥ 0.92
+  (`TEMPLATE_THRESHOLD`) they share one template: **one component, built once**; the second
+  task is a configuration row. A list of 500 rows is sampled: five, and more only while new
+  templates keep appearing, up to `STATE_BOUND` (30).
+- **The shell** is the set of modules on every page (top bar, side nav). It is known only
+  once two pages exist, and it only shrinks.
+- **Writes are never fired while walking.** `safety.mjs` never fires log out or delete
+  account. Save, Delete, Submit and paid actions are held, and every non-read request is
+  aborted in the browser. A node reachable only through a write waits for a human `resume`.
+
+**The priority queue.** The frontier is an indexed binary heap (`heap.mjs`). The first key
+that differs wins:
+
+| order | key | why |
+|---|---|---|
+| 1 | reachable without a write first | writes wait for a human |
+| 2 | entry nodes first | the first page lands early |
+| 3 | template with the most in-edges | the most reused screen is worth finishing first |
+| 4 | shallower first | fewer hops to replay |
+| 5 | fewer interactive elements | closes fast, unblocks children |
+| 6 | node id | stable ties |
+
+Priorities change while nodes wait. A new edge raises a template's in-degree, a shorter
+path lowers a depth, and `update(key)` re-sifts just that entry in O(log n). Depth stays
+exact by **BFS relaxation**: when a shorter route to a node appears, the new depth is
+pushed to everything downstream.
+
+Pop order for the example:
+
+```
+pop 1  /home         entry
+pop 2  /tasks        depth 1, its template already has 2 in-edges
+pop 3  modal         depth 1
+pop 4  /tasks/42     depth 2
+pop 5  Done tab      state of /tasks
+pop 6  /tasks/43     same template: verified as a row, no new component
+(held) after Save, after Delete    only through a write
+```
+
+**Backtracking without recursion.** A depth-first walker must undo its way back up.
+seemly never backtracks: the next pop can be anywhere, and the walker jumps straight to
+it by its **replay route**. Routes are a **multi-source Dijkstra** from all entry nodes at
+once, with edge costs:
+
+| edge | cost |
+|---|---|
+| redirect | 0 |
+| hover, scroll | 0.5 |
+| click, keyboard, navigation | 1 |
+| write | ∞, so a replay never fires a write |
+
+`route(/tasks/42)` is `/home → click Tasks → click row 42`, cost 2. The walker opens the
+last URL on the route and replays only the clicks after it, so a state encoded in the URL
+(`?tab=done`) is the cheapest restore. The same routes become the golden traces.
+
+**Loops are normal.** `/tasks/42 → back → /tasks` is a cycle. Dedupe makes it harmless;
+**Tarjan's strongly connected components** (iterative, so deep graphs cannot overflow the
+stack) lists such loops for the live diagram.
+
+**Crash-safe.** `graph.json` is the queue itself, written atomically (temp file + rename).
+On resume, every `expanding` node goes back on the frontier, so no work is lost or done
+twice. `events.jsonl` logs every mutation; `graph.html` and `tree.md` draw the graph live.
+
+### Graph 2: the build graph
+
+When the surface graph is closed, `run.mjs plan` turns it into units:
+
+```mermaid
+flowchart TD
+    shell[shell<br/>top bar + side nav] --> mTable[module: task table]
+    shell --> mForm[module: task form]
+    shell --> tHome[template: home]
+    shell --> tList[template: task list]
+    shell --> tDetail[template: task detail]
+    mTable --> tList
+    mForm --> tHome
+    mForm --> tDetail
+```
+
+Kahn's topological sort orders them, breaking ties by how much depends on a unit (the
+most-used module first): `shell → task table → task form → home → task list → task
+detail`. `next-unit` hands out one unit whose dependencies are built, with a **packet**:
+the members, captures, what each control opens, replay routes, writes, and the lessons
+selected for it. Two agents never build one template. A dependency cycle throws, with the
+loop named by Tarjan.
+
+Each unit is built the same way: anatomy from the capture, semantic HTML, schema from
+the captured JSON, backend that mirrors the reference's requests, all eight states,
+computed styles converged to zero diff. It is then verified on structure, style, pixels
+and the golden trace.
+
+### Graph 3: the learning graph
+
+```mermaid
+flowchart LR
+    c[correction / verify failure /<br/>gate catch / fix commit] --> r[record]
+    r --> d{same lesson exists?<br/>token overlap ≥ 0.6}
+    d -- yes --> s[seen += this build]
+    d -- no --> cand[candidate: prose]
+    s --> p{seen in 3 builds?}
+    p -- yes --> act[active: select hands it<br/>to workers on matching units]
+    act --> e{defect came back<br/>at this level?}
+    e -- yes --> up[escalate: checklist → gate → code<br/>needs a check + an eval that fails without it]
+    act --> st{unseen for 5 builds?}
+    st -- yes --> ret[retire, with a reason]
+```
+
+A worker never reads all the rules. `select` returns at most 20 lessons that match the
+unit's phase, kind, area and tool. Gates and code are not returned at all, because they
+enforce themselves. The more lessons climb the ladder, the less a worker has to read.
+
+In the example, suppose the first build's modal did not trap focus. The correction
+becomes a lesson; next build, `select` hands it to the "New task" modal unit. If the
+defect comes back anyway, the lesson escalates into a gate that fails the build.
+
+### How this becomes an RL environment
+
+An RL environment needs a resettable world, an observable state, actions, and a way to
+score the result. The clone provides each one:
+
+```mermaid
+flowchart LR
+    agent([RL agent]) -- actions: clicks, typing,<br/>API calls --> app[clone UI + /api]
+    app --> db[(SQLite state)]
+    reset[POST /reset] --> db
+    db -- state introspection,<br/>snapshot / restore --> grader[grader]
+    grader -- reward: did the DB end<br/>in the expected state? --> agent
+```
+
+| RL piece | what seemly builds | example |
+|---|---|---|
+| **environment** | a pixel- and flow-identical clone, every screen from graph 1 | the task app at `localhost:3000` |
+| **reset** | `POST /reset`: seed through the service layer, byte-identical every time | every episode starts with the same 37 tasks |
+| **state** | the database, plus snapshot, restore and a generated state contract | `tasks` table, `status` column |
+| **actions** | every edge of graph 1 that the clone implements: clicks, hovers, keys, writes | click "New task", type a title, click Save |
+| **task** | a golden trace or a write path from graph 1 | "create a task named Q3 report and mark it done" |
+| **reward** | the grader checks the end state in the DB and through `/api/openapi.json` endpoints | a row with title "Q3 report" and status `done` exists |
+
+Because the clone mirrors the reference's requests 1:1, a policy learned on the clone
+transfers to the real app's UI and API shapes.
+
+### Commands for each stage
+
+```bash
+node scripts/orchestrator/run.mjs init --target https://tasks.example.com
+node scripts/orchestrator/run.mjs explore --max-nodes 40      # graph 1
+node scripts/orchestrator/run.mjs status | tree | frontier | route <id> | loops
+node scripts/orchestrator/run.mjs plan                         # graph 2
+node scripts/orchestrator/run.mjs next-unit                    # one unit + packet
+node scripts/orchestrator/run.mjs unit-done <unit> --verified
+node learning/cli.mjs select --phase build --kind modal        # graph 3
+node learning/cli.mjs review --builds b1,b2,b3
+```
+
+You normally never type these: `/seemly` runs them. They are here so you can see where
+a run is (`status`, `tree`) and why a node is next (`frontier`, `route`).
+
 ## Seeding and schema: the practices it enforces
 
 - **Schema comes from captured payloads, never from memory.** Every XHR body, every
@@ -165,7 +401,7 @@ Everything else is a correction. Case matters only for `STATUS` and `STOP`.
 
 | what | where | pushed? |
 |---|---|---|
-| the skill (team base) | `.claude/skills/seemly/` | yes, via PR |
+| the skill (team base) | `~/.claude/skills/seemly/` (this repo) | by the owner, after `promote` |
 | corrections, lessons, overlay rules, scorecard history | `never_to_be_pushed/seemly-local/` | never |
 | discovery, captures, resume state | `never_to_be_pushed/discovery/` | never |
 | the clone | `frontend/ backend/ scripts/ e2e/ docs/` | yes, on `feat/*` |
