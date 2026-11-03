@@ -346,7 +346,7 @@ For every element on every page, before it is done:
    or missing bar item, heading, table header or button at any width.
 
 The five QA scripts (`scripts/qa/`, each writes its check record; each is proven by eval
-`X-QA` to fail on its defect) and when they run, so they cost what they are worth:
+`X-QA` to fail on its defect), plus `frame_diff.mjs` for video-mode builds (eval `X-FRAME`), and when they run, so they cost what they are worth:
 
 | script | catches | cost | runs |
 |---|---|---|---|
@@ -355,6 +355,21 @@ The five QA scripts (`scripts/qa/`, each writes its check record; each is proven
 | `human_eye.mjs` | stand-in images, broken images, clipped text, unnamed controls, sideways overflow; dead controls with `--dead-controls` | seconds; a reload per control with the flag | unit end |
 | `write_roundtrip.mjs` | a write that answers 200 and never lands on a read or survives a reload | seconds a write | every unit with a write |
 | `width_sweep.mjs` | overflow and layout that break away from 1440 | 2 loads per width a page | PAGE COMPLETE and QA |
+| `frame_diff.mjs` | video mode, reference unreachable: a label the frame shows and the clone lacks, a region off by more than 4 px (atom) or 8 px (region), a role, count or order that differs from the spec | one load and two OCR passes a state | every state in `states.json`, unit end |
+
+**Verify against frames (video mode).** When the reference cannot be reached and a recording
+is the only truth (RL_BUILD §0.7), the pixel oracle and the two-tab compare have nothing to
+open. `scripts/qa/frame_diff.mjs --plan discovery/frame_verify.json` takes their place for those
+states: it drives the clone to each state of the video mode's `states.json` at the calibrated
+viewport (100% zoom, DPR 1), screenshots it, and compares it with the state's canonical (masked)
+frame on three channels: **text** (OCR both the same way; every frame label must be on the
+clone; seeded values are ignored), **layout** (matched OCR word boxes; median offset per region
+after calibration, 4 px atoms, 8 px regions, side-by-side crops on failure) and **structure**
+(spec roles, names, counts and order against the clone's accessibility tree). Colour is never
+judged from a frame; tokens come from a live capture when one exists. Output:
+`discovery/verify/<state>.md` and `summary.json` (pass per checklist id, which the project's
+coverage report shows as "built and verified"). Proven by eval `X-FRAME`. Reachable references
+keep the pixel and two-tab paths above; frame_diff never replaces them.
 
 Each is a row in `discovery/crosscheck.md`. "Matched at rest at one width" is a partial
 verdict and is written as one. `PAGE COMPLETE` per route prints the table

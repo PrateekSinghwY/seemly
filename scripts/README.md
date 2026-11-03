@@ -6,7 +6,8 @@ load Playwright from the repo they work on (`lib/pw.mjs`).
 - `orchestrator/`: the surface graph engine, the explorer and the build coordinator
   (`run.mjs`; SKILL.md sections 4-5; its own README).
 - `qa/`: `edition_gate`, `struct_audit`, `width_sweep`, `human_eye`, `write_roundtrip`, each
-  writing its check record (`reference/checks.md`), each proven by eval `X-QA`.
+  writing its check record (`reference/checks.md`), each proven by eval `X-QA`; and
+  `frame_diff`, the video-mode Phase D check against recorded frames (eval `X-FRAME`).
 
 The rest of this file is about the templates.
 
