@@ -357,7 +357,7 @@ The five QA scripts (`scripts/qa/`, each writes its check record; each is proven
 | `width_sweep.mjs` | overflow and layout that break away from 1440 | 2 loads per width a page | PAGE COMPLETE and QA |
 | `frame_diff.mjs` | video mode, reference unreachable: a label the frame shows and the clone lacks, a region off by more than 4 px (atom) or 8 px (region), a role, count or order that differs from the spec | one load and two OCR passes a state | every state in `states.json`, unit end |
 
-**Verify against frames (video mode).** When the reference cannot be reached and a recording
+**Verify against frames (video mode).** Video mode's pipeline is `/seemly-video` (`video/SKILL.md`). When the reference cannot be reached and a recording
 is the only truth (RL_BUILD §0.7), the pixel oracle and the two-tab compare have nothing to
 open. `scripts/qa/frame_diff.mjs --plan discovery/frame_verify.json` takes their place for those
 states: it drives the clone to each state of the video mode's `states.json` at the calibrated

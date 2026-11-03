@@ -3,7 +3,9 @@
 ## One-time setup (5 minutes)
 
 1. Install the skill once: `git clone https://github.com/PrateekSinghwY/seemly
-   ~/.claude/skills/seemly`, then restart Claude Code. Update with
+   ~/.claude/skills/seemly`, then
+   `ln -sfn ~/.claude/skills/seemly/video ~/.claude/skills/seemly-video` (adds
+   `/seemly-video`), then restart Claude Code. Update with
    `git -C ~/.claude/skills/seemly pull` (and restart) whenever the owner announces
    an update. Never push to the skill repo; send corrections to the owner, who
    promotes them.
@@ -14,6 +16,15 @@
 4. If the target geo-routes, a VPN that both Chrome and a Playwright window can use
    (system-wide, or a Chrome extension you also enable in the Playwright window it opens).
 5. Read `~/.claude/skills/seemly/INTAKE.md` once. It is one page.
+
+## Building from videos
+
+1. Once per project: `bash ~/.claude/skills/seemly-video/scripts/setup.sh --selftest`
+   (installs ffmpeg, tesseract and uv with Homebrew if missing, gitignores the video
+   tree, checks Playwright, runs the planted-event proof). It must print `setup OK`.
+2. `/seemly-video <folder with the recordings>`. Correct the `VIDEO INTAKE` block or
+   reply `go`. Then it runs to `DONE`: frames, labels, gaps, recon, build, verify.
+3. Never commit videos, frames, transcripts or `pii.json`. `pii-check` must pass first.
 
 ## Running a build
 

@@ -10,12 +10,15 @@ give it.
 
 You need [Claude Code](https://claude.com/claude-code) and git.
 
-1. Install the skill:
+1. Install the skill (the second line adds `/seemly-video`, which lives in the same repo):
    ```
    git clone https://github.com/PrateekSinghwY/seemly ~/.claude/skills/seemly
+   ln -sfn ~/.claude/skills/seemly/video ~/.claude/skills/seemly-video
    ```
 2. Restart Claude Code.
-3. Open Claude Code in the project you are building and type `/seemly`.
+3. Open Claude Code in the project you are building and type `/seemly` (live app) or
+   `/seemly-video` (recordings only). For video, run once per project:
+   `bash ~/.claude/skills/seemly-video/scripts/setup.sh --selftest`. It must print `setup OK`.
 
 If the project has `scripts/research_setup.sh`, run it once; it must print `setup OK`.
 
@@ -27,7 +30,7 @@ When the owner says seemly was updated:
 git -C ~/.claude/skills/seemly pull
 ```
 
-Then restart Claude Code.
+Then restart Claude Code. One pull updates both `/seemly` and `/seemly-video`.
 
 ## Or let Claude Code do it
 
@@ -38,12 +41,44 @@ Set up the seemly skill for me:
 1. If ~/.claude/skills/seemly does not exist, run:
    git clone https://github.com/PrateekSinghwY/seemly ~/.claude/skills/seemly
    Otherwise run: git -C ~/.claude/skills/seemly pull
+   Then run: ln -sfn ~/.claude/skills/seemly/video ~/.claude/skills/seemly-video
 2. If this project has scripts/research_setup.sh, run it and show me anything that is
    not "ok".
-3. Tell me to restart Claude Code so /seemly loads.
+3. Run: bash ~/.claude/skills/seemly-video/scripts/setup.sh --selftest
+   and run the exact command on any FIX line, then re-run it until it prints setup OK.
+4. Tell me to restart Claude Code so /seemly and /seemly-video load.
 ```
 
 Do not push to this repo. Send corrections to the owner, who merges them in.
+
+## From videos: `/seemly-video`
+
+When the app cannot be reached (a customer tenant, a paywalled module), recordings are the
+reference. Put the videos in the project and type:
+
+```
+/seemly-video path/to/videos/
+```
+
+It prints one `VIDEO INTAKE` block (videos, source rank, scope, coverage checklist, browser
+chrome height, personal values seen). Reply `go`. From there it runs on its own:
+
+1. **Extract**: every decoded frame is analysed at native fps, so a 200 ms tooltip or
+   spinner is caught, plus 2 fps samples, scene changes, audio and speech-to-text.
+2. **Dedupe in layers**: settle, frame-level, revisit, seen cache, state, cross-video, and
+   a pin that never merges away a frame that is the only proof of a checklist item.
+3. **Mask**: browser chrome and every name, email, id and host in `pii.json` are blacked
+   out before any frame is read. `pii-check` blocks a commit that contains one.
+4. **Label** every curated frame (screen, state, flow, fields, which checklist ids it
+   proves), **rescue** missing flow steps from the raw frames, and write the **coverage
+   gap report**: what the videos prove, and what to record next.
+5. **Recon** one spec per screen from the frames, every fact tagged `[frame:<id>]`.
+6. **Build** with `/seemly` in video mode, then **verify** every built state against its
+   frame with `frame_diff` (text, layout within 4 px or 8 px, accessibility structure).
+   The report says `n of N verified`, counted.
+
+Videos, frames, transcripts and `pii.json` stay on your machine: `setup.sh` gitignores them.
+Full instructions: [`video/SKILL.md`](video/SKILL.md).
 
 ## In one minute
 
