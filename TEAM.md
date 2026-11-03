@@ -2,15 +2,18 @@
 
 ## One-time setup (5 minutes)
 
-1. `git pull` on `main` in the RL repo. The skill is at `.claude/skills/seemly/`;
-   Claude Code loads it automatically when you open the repo. No install step.
+1. Install the skill once: `git clone https://github.com/PrateekSinghwY/seemly
+   ~/.claude/skills/seemly`, then restart Claude Code. Update with
+   `git -C ~/.claude/skills/seemly pull` (and restart) whenever the owner announces
+   an update. Never push to the skill repo; send corrections to the owner, who
+   promotes them.
 2. Chrome with the Claude in Chrome extension, connected to Claude Code (`/chrome` in a
    session shows "Now using browser ...").
 3. Node 20+ and Python 3.11+ on your machine (the repo's `AGENTS.md` lists the stack).
    Playwright installs itself on first preflight if missing.
 4. If the target geo-routes, a VPN that both Chrome and a Playwright window can use
    (system-wide, or a Chrome extension you also enable in the Playwright window it opens).
-5. Read `.claude/skills/seemly/INTAKE.md` once. It is one page.
+5. Read `~/.claude/skills/seemly/INTAKE.md` once. It is one page.
 
 ## Running a build
 
@@ -37,7 +40,7 @@
 
 | what | where | pushed? |
 |---|---|---|
-| the skill (team base) | `.claude/skills/seemly/` | yes, via PR |
+| the skill (team base) | `~/.claude/skills/seemly/` (repo `PrateekSinghwY/seemly`) | owner only, after `promote` |
 | everything it learns on your machine | `never_to_be_pushed/seemly-local/` | never |
 | the build's discovery and state | `never_to_be_pushed/discovery/` | never |
 | the clone | `frontend/`, `backend/`, `scripts/`, `e2e/`, `docs/` | yes, on `feat/*` |

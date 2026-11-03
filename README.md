@@ -6,6 +6,45 @@ seed and reset included, with zero typed data and zero personal data. It asks on
 question at the start, then runs unattended, and it learns from every correction you
 give it.
 
+## Setup (once, 2 minutes)
+
+You need [Claude Code](https://claude.com/claude-code) and git.
+
+1. Install the skill:
+   ```
+   git clone https://github.com/PrateekSinghwY/seemly ~/.claude/skills/seemly
+   ```
+2. Restart Claude Code.
+3. Open Claude Code in the project you are building and type `/seemly`.
+
+If the project has `scripts/research_setup.sh`, run it once; it must print `setup OK`.
+
+## Update
+
+When the owner says seemly was updated:
+
+```
+git -C ~/.claude/skills/seemly pull
+```
+
+Then restart Claude Code.
+
+## Or let Claude Code do it
+
+Paste this into Claude Code. It installs the skill if missing, updates it otherwise:
+
+```
+Set up the seemly skill for me:
+1. If ~/.claude/skills/seemly does not exist, run:
+   git clone https://github.com/PrateekSinghwY/seemly ~/.claude/skills/seemly
+   Otherwise run: git -C ~/.claude/skills/seemly pull
+2. If this project has scripts/research_setup.sh, run it and show me anything that is
+   not "ok".
+3. Tell me to restart Claude Code so /seemly loads.
+```
+
+Do not push to this repo. Send corrections to the owner, who merges them in.
+
 ## In one minute
 
 ```
