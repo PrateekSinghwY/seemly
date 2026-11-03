@@ -4,7 +4,10 @@ The reference app is a directed graph. The skill discovers it, deduplicates it, 
 it, and then applies the **same per-node procedure** to every node until the frontier is
 empty. Nothing is built outside the graph; nothing in the graph is left unbuilt or
 unrecorded. This file is the algorithm. RL_BUILD Part 4 (recursion rule) and
-BUILD_PROTOCOL Phase 2 (click expansion) are its source; this makes them mechanical.
+BUILD_PROTOCOL Phase 2 (click expansion) are its source; `scripts/orchestrator/` is its
+implementation (`explore.mjs` the walk, `build.mjs` the units, `run.mjs` the commands in
+SKILL.md sections 4 and 5). Where this file and the code disagree, fix whichever is wrong in
+the same change; never leave them apart.
 
 ## Definitions
 
@@ -61,24 +64,84 @@ while frontier not empty:
     verify(n)                                     # Phase D, structure + style + pixels + trace
     write RESUME.md (graph stats, frontier size, built count)
 
-assert frontier empty and no node marked capped
+assert frontier empty and nothing capped without a recorded reason
 ```
 
 Termination is a property of the graph, not a feeling: frontier empty, every node
 closed, every node built or configured, every edge either built or recorded as GAP or
-external.
+external. `graph.json` is the queue, and a node's status is written in the same step that
+expands or builds it; the loop ends with `run.mjs status` and `tree`, never on a sense of
+completeness. "Capped" is allowed only with a reason recorded on the node (a human ruling, an
+irreversible or paid lane, a blocked third party).
+
+## Building: one unit at a time, one agent per unit
+
+`run.mjs plan` turns the closed graph into units (shell, module archetypes, templates) in
+dependency order; `next-unit` hands out one whose dependencies are built, with a packet that
+is the whole brief (members, captures, what each control opens, replay routes, writes,
+selected lessons). A unit may go to a subagent with the packet as its prompt; two agents never
+build one template.
 
 ## Priority (what to pop first)
 
-1. **The shell**: nodes whose modules appear on every entry node. Built once as a layout.
-2. **Highest in-degree templates**: the template reached from the most edges is worth
-   the most, and every node of it after the first is a configuration row.
-3. **Entry nodes** in INTAKE order, then their children breadth-first, so the first
-   visible page lands within the two-hour deadline.
-4. **Cheapest first within a level**: nodes with fewer interactive elements close faster
-   and unblock their children.
-5. **Writes last**: edges of kind `write` are expanded after every read-only edge of the
-   node, and only when free and reversible (recorded in `DIRTIED.md`, restored).
+First key that differs wins (`graph.mjs` `#compare`):
+
+1. **Writes last**: a node reachable only through a write waits behind every other node.
+2. **Entry nodes** in INTAKE order, so the first visible page lands within the deadline.
+3. **Highest in-degree template**: the template reached from the most edges is worth the most,
+   and every node of it after the first is a configuration row.
+4. **Shallower first**: fewer hops from an entry (kept exact as shorter routes appear).
+5. **Cheapest first**: fewer interactive elements close faster and unblock their children.
+
+The shell is not popped first; it is *built* first (build order), and it is only knowable once
+two pages are in the graph. This priority queue replaces depth-first walking with
+backtracking: a backtrack is just the next pop, reached by its replay route.
+
+## Reaching a node: replay routes
+
+Every node is reached by its cheapest route from an entry (multi-source Dijkstra; redirect 0,
+hover and scroll 0.5, click, keyboard and navigation 1, write never). The walker jumps to the
+last URL-addressable page on the route and replays only the clicks after it, so a URL that
+encodes state (`?view=`, `?filter=`) is the cheapest restore and is preferred as identity. The
+same routes start the golden traces.
+
+## What the walker does per node
+
+1. Reach it. Close anything open on load (a tour, a consent prompt, a what's-new modal) and
+   record each as its own node, reached from the page by a free `redirect` edge: a census taken
+   with one open counted a handful of controls where the page had about two hundred.
+2. Save its capture under `nodes/<id>/`: screenshot, DOM, AX tree, every JSON response, and
+   `inventory.json` (every element, its role and name, and what firing it did).
+3. Fire every element once. Links are read in a side tab. Buttons and card-like elements
+   (pointer cursor, `[aria-expanded]`, a handler) are clicked; popup triggers and nav items are
+   hovered first. What happened decides the edge: URL changed (navigation), a new floating
+   surface (modal, menu, popover; scoped to its own root), the skeleton changed in place
+   (state: tab, accordion, expanded row), a native dialog or download (recorded), or nothing
+   (inert; the human-eye pass asks whether the clone's twin is dead).
+4. Inventory but do not fire: disabled controls, text fields (typed input is QA's validation
+   battery), native selects (their option lists are recorded).
+5. A state or overlay re-exposes everything around it; only what is new to it is expanded there.
+6. Close the node and save the graph, so a crash resumes at the next pop.
+
+## Writes while walking
+
+Session-ending controls are never fired. Money, messaging, deletion and metered (credit,
+token) controls are queued in `pending-writes.jsonl` unless the run says `--risky probe`.
+Every non-read request is aborted in the browser, so a control that writes under an innocent
+name shows its failure path and is queued with the request it tried; a node reached only that
+way is reached through a `write` edge and waits for its BLOCKED step. A metered edge records
+the price and kind shown; authorisation is for exactly that, and a different price re-blocks.
+Edges that mutate the reference's client state (drawing on a map, editing layers, a persisted
+"don't show again") are read from their definitions (layer paint, config), never fired.
+
+## Sampling repeated siblings
+
+Rows of one list (siblings sharing a css path up to their indexes) in a group larger than
+STATE_BOUND are sampled: five, and more only while they keep leading to different templates,
+up to STATE_BOUND. The group, its size and the number tried are recorded on the node. Shell
+controls (the same role, name and place) are expanded on two templates and recorded as
+inherited elsewhere. A data-volume variant (no records vs some) is a separate state, captured
+on purpose, not left to whichever account was open.
 
 ## Deduplication and reuse
 
@@ -118,10 +181,14 @@ is not a reason to skip; the queue decides, the builder does not.
 ## Artifacts
 
 ```
-discovery/graph.json        nodes (id, url, state, template, status), edges (from, to, kind, element, request, reversible)
-discovery/queue.jsonl       the frontier, one line per node, with priority and reason
-discovery/tree.md           the closed graph printed as a tree from each entry node, verdict per node
-discovery/templates.md      template → component → nodes using it → config rows
+discovery/graph.json          nodes, edges, templates, module archetypes, bounds: the queue itself
+discovery/events.jsonl        every mutation, append-only (what the live view and a post-mortem read)
+discovery/nodes/<id>/         screenshot.png, dom.html, aria.yml, inventory.json, xhr/*.json per node
+discovery/pending-writes.jsonl  controls held for BLOCKED, with any request they tried
+discovery/tree.md             the graph as a tree from each entry by cheapest route, verdict per node
+discovery/graph.html          the live diagram (status colour, kind shape, write edges dashed)
+discovery/build.json          units in build order with their status
+discovery/packets/<unit>.md   the brief for one unit
 ```
 
 `graph.json` is the single source for STATUS (`nodes closed / discovered`, `built /

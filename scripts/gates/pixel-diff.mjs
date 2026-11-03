@@ -5,9 +5,9 @@
 import { chromium } from 'playwright';
 import { readFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'fs';
 import { PNG } from 'pngjs';
-import { clipName, assertUniqueClipNames } from './lib/clip-name.mjs';
-import { redactA2 } from './lib/a2-redact.mjs';
-import { BLOCKED_URLS } from './lib/block-list.mjs';
+import { clipName, assertUniqueClipNames } from '../lib/clip-name.mjs';
+import { redactA2 } from '../lib/a2-redact.mjs';
+import { BLOCKED_URLS } from '../lib/block-list.mjs';
 
 const DISCOVERY = 'never_to_be_pushed/discovery/scrape';
 const STAMP = existsSync(`${DISCOVERY}/raw`) ? readdirSync(`${DISCOVERY}/raw`).sort().reverse()[0] : null;

@@ -9,7 +9,7 @@
 // by a page component.
 import { readFileSync, readdirSync, statSync, existsSync } from "fs";
 import { join, relative } from "path";
-import { writeCheckRecord } from "./lib/check-record.mjs";
+import { writeCheckRecord } from "../lib/check-record.mjs";
 
 const NAME = "components_mounted";
 

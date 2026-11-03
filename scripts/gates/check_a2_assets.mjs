@@ -14,8 +14,8 @@
 // Skips cleanly when discovery/ is absent (it is git-excluded, so CI will not have it).
 import { chromium } from 'playwright';
 import { readFileSync, existsSync, readdirSync } from 'fs';
-import { A2_SELECTOR, A2_HEADING_SOURCE, A2_HEADING_SCOPE, A2_HEADING_NEVER, A2_KEEP } from './lib/a2-selector.mjs';
-import { writeCheckRecord } from './lib/check-record.mjs';
+import { A2_SELECTOR, A2_HEADING_SOURCE, A2_HEADING_SCOPE, A2_HEADING_NEVER, A2_KEEP } from '../lib/a2-selector.mjs';
+import { writeCheckRecord } from '../lib/check-record.mjs';
 
 const NAME = 'a2_containment';
 

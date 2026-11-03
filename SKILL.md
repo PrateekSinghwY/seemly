@@ -17,8 +17,10 @@ when this file points at them. The full base method is bundled under
 `reference/method/` (`RL_BUILD.prompt.md`, `RECON.prompt.md`, `BUILD_PROTOCOL.md`,
 `SELF_CORRECTION.md`); this file is the executive layer on top of it, and where the two
 disagree this file wins. On the first run in a repo, copy `reference/method/BUILD_PROTOCOL.md`
-to `docs/BUILD_PROTOCOL.md` if absent, and `scripts/` templates to the repo's `scripts/`
-(section 7). `reference/backend.md` is the data-layer contract; `templates/` hold the
+to `docs/BUILD_PROTOCOL.md` if absent (and add a must-read pointer to it at the top of the
+repo's `AGENTS.md` detailed references), and `scripts/` templates to the repo's `scripts/`
+(section 7). The orchestrator and the QA scripts run from the skill itself and load Playwright
+from the repo (`pnpm add -D -w playwright` there if it is missing). `reference/backend.md` is the data-layer contract; `templates/` hold the
 RESUME and SCORECARD shapes.
 
 ---
@@ -113,6 +115,7 @@ PREFLIGHT
   write to disk         ✓ discovery/ created, exclude guard set | ✗
   repo                  ✓ AGENTS.md read, stack <x>, verify.sh present | ✗
   push guard            ✓ pre-push refuses without PUSH_OK=1 | ✗ installed now
+  theme                 ✓ <theme> asserted by value in both tools (edition_gate) | ✗
   first-page deadline   set: <now + 2h>
 ```
 
@@ -137,12 +140,13 @@ Rules the preflight enforces, learned the hard way:
 |---|---|---|
 | Discover: what opens on hover or click, dropdown contents, tabs, modals, carousels, the click tree, "is this a GAP or did I miss it" | **Claude in Chrome** | real profile, hydrated UI, cheap to poke, no capture run burned |
 | Capture to disk: hydrated DOM, every XHR body, every `window.*` global, images, fonts, computed-style manifest, AX tree, full-page oracle under the determinism lock | **Playwright + CDP** | writes files, byte-exact, `DOMSnapshot`, `forcePseudoState`, `getPlatformFontsForNode`, `Input.dispatch*` have no Chrome MCP equivalent |
-| Re-check a behaviour, confirm a redirect, verify a doubt on the live site | Claude in Chrome | |
+| Walk the click graph: fire every element, record what opened, save each node's capture | **the orchestrator** (Playwright, persistent profile, writes aborted) | mechanical, resumable, never skips a control out of boredom |
+| Re-check a behaviour, confirm a redirect, verify a doubt on the live site, everything the walker cannot fire (drag, drawing, typing, uploads) | Claude in Chrome | |
 | Pixel diff oracle vs clone | Playwright over CDP, **one Chrome build for both sides** | same renderer or the diff is noise |
 | Anything Chrome MCP returns truncated (strings over ~1 KB, arrays over ~100 items) | Playwright | Chrome MCP cannot write files and truncates; do not chunk a 1 MB DOM through it |
 
-Every Playwright use during discovery, and every Chrome use during capture, gets a row
-in `discovery/tool-fallbacks.md` with the reason. See `reference/tool-split.md` for the
+Every Playwright use during discovery outside the orchestrator, and every Chrome use during
+capture, gets a row in `discovery/tool-fallbacks.md` with the reason. See `reference/tool-split.md` for the
 known limitations of each tool and the workaround for each.
 
 ---
@@ -175,8 +179,10 @@ were violated last time):
   ids), logged in `scrub-log.jsonl`. Personal-detail grep over the tree after every page.
 
 Before the first capture and before every later one, run the **edition gate**
-(`scripts/qa/edition_gate.mjs`) and print its result to the human: both tools on the reference
-host, served the target edition, logged out, light mode.
+(`scripts/qa/edition_gate.mjs`; it prints a probe to run in Chrome and compares both readings)
+and print its result to the human: both tools on the reference host, served the target
+edition, in the login state the target needs, theme and language asserted by value. A UI kit
+may keep the theme in `localStorage`; seed it in the persistent profile.
 
 Then provenance: every text node resolves to a captured field, a formatted value, or a
 `ui_copy` row. **Unresolved must be 0.** A `NOT CAPTURED` verdict for any module must
@@ -186,94 +192,139 @@ Then the seed: induce the model from the payloads, keep the reference's id forma
 ordering, seed through the service layer, `POST /reset`, snapshot and restore, **byte-
 identical twice**. Nothing synthesised while the reference is reachable.
 
+Before any write of a metered kind (one that spends a credit, token or quota), the full style,
+AX and oracle capture of every step behind it runs first: the write may be possible once.
+
 ---
 
-## 4. Phase B: expand the surface graph in Chrome while building starts
+## 4. Phase B: walk the surface graph (the orchestrator walks; you rule)
 
-The app is a directed graph of surfaces and states; `reference/graph.md` is the
-algorithm and it is followed literally: node identity by URL plus structural signature,
-templates by signature similarity (one template = one component, every later node of it
-= configuration rows), a priority queue (shell, highest in-degree templates, entry
-nodes breadth-first, cheapest first, writes last), dedupe by node id, DEPTH bounding
-navigation edges, STATE_BOUND bounding query and date states (≤ 30 linked values per
-parameter, the rest recorded out-of-range), and termination as a graph property
-(frontier empty; `bounded` nodes closed with their limit recorded; nothing `capped`). `discovery/graph.json` is the single source for STATUS, PAGE COMPLETE and the
-scorecard. The same per-node procedure runs on every node: capture, inventory, expand,
-build or configure, converge, verify, record, push children.
+The app is a directed graph of surfaces and states. `reference/graph.md` is the algorithm and
+`scripts/orchestrator/` runs it: node identity by URL plus structural signature, templates by
+signature similarity (one template = one component, every later node of it = configuration
+rows), a priority queue (entry nodes, then the most-linked template, then shallower, then
+cheaper, writes last), dedupe by node id, cheapest replay routes (Dijkstra, never through a
+write), STATE_BOUND (30 per path family or query parameter, the rest recorded out of range),
+and termination as a graph property. `discovery/graph.json` is the queue and the single source
+for STATUS, PAGE COMPLETE and the scorecard. `O` below is
+`node <skill>/scripts/orchestrator/run.mjs`, run from the repo root.
 
-From the snapshot, the shell and the first page start building (Phase C) while Chrome
-walks the reference:
+```bash
+O init --target <url> [--prefix /path] [--entry <url>]...   # entry pages, read in the persistent profile
+O explore --max-nodes 40                                      # one chunk; repeat until it prints CLOSED
+O status    O tree    O live    O pending    O route <node>   # STATUS, tree.md, graph.html, writes waiting
+```
 
-- Every nav item hovered, every dropdown, picker, tab, carousel arrow to both ends,
-  every "more", every modal, drawer, popover, toast. What opens is a node; every node is
-  inventoried (BUILD_PROTOCOL Phase 1: element, role and name, eight states, on activate,
-  network, verdict) and its children are pushed onto `discovery/queue.jsonl`.
-- **The graph is live.** Every click found while working, including while backtracking and
-  inside overlays, is pushed onto the queue and gets the full per-node procedure. The queue
-  closes only when it is empty, never because the first walk ended.
-- **Every card-like element is clicked** (`cursor: pointer`, a handler, `[aria-expanded]`,
-  `[role=button]`, a card box) before its module is built; what opens is a node with its own
-  inventory, data and animation timeline (`reference/capture-rules.md`).
-- **The shell is inventoried on every template**, not once: strips, bars and headers change
-  per section, date and route family.
-- **Nothing is terminal because it "probably has nothing behind it."** A node is terminal
-  only when every element changes state in place, writes and stays, or navigates to a
-  node already in the tree.
-- **Negative verdicts must be evidenced on every in-scope page.** "Not detected" from one
-  page is not a verdict.
-- New nodes with content the snapshot lacks are captured by Playwright as `T0+n`.
-- Writes on the reference are fired only when free and reversible, once, to capture the
-  write path, then restored; every one is a row in `discovery/DIRTIED.md`. Paid, sending,
-  publishing, deleting or account-changing actions are never fired, with the one exception: deleting a row this run created, only when a `resume` reply names that delete, recorded in `DIRTIED.md`.
-- **The first write of each kind on the reference is a `BLOCKED` (irreversible
-  action).** Restoring a write usually means deleting it or reverting an account
-  setting, which is exactly what NEVER forbids, and this runs unattended on the human's
-  real account. So before it fires, print the block naming the write and its restore,
-  and wait. A bare `resume` authorises that write and a restore that needs **no
-  delete** (toggle back, unfollow, edit back to the state recorded in `DIRTIED.md`). A
-  restore that needs a delete is not fired on a bare `resume`: the block says so, and
-  only a reply naming that delete (`resume, allow delete: <what>`) authorises it, for a
+Run `explore` with `run_in_background` and keep building while it walks; each chunk saves the
+graph, so a crash or a checkpoint loses nothing. How to run it well, learned on a full audit:
+
+- **Logged-in reference:** the human logs in once in a headed window (`--remote-debugging-port`);
+  copy that login out with `node <skill>/scripts/lib/export-login.mjs --cdp <port url> --domain
+  <site> --out never_to_be_pushed/discovery/auth-ref.json` and run every tool with
+  `SEEMLY_STORAGE_STATE=<that file>`, so each gets its own browser. Never attach two tools to
+  one window over CDP: a site's service worker trips a Playwright assertion in every attached
+  client and kills it.
+- **Parallel workers:** copy `graph.json` into one dir per area and run
+  `O explore --dir <copy> --only-prefix /area ...` per worker; each walks only its area.
+- **Stop and recover:** a SIGTERM stops a walk cleanly (the node in hand goes back on the
+  frontier). If a walk ever died with its browser, `O requeue --failed` restores its give-ups.
+  Nodes reachable only through a write close as `bounded`, not as failures.
+- **The clone side** is walked on an isolated copy (own DB copy, own ports, never the dev DB)
+  with `--allow-post '.*'`, so every write flow runs end to end; `errors.jsonl` then lists each
+  failed API call and script error with the click that caused it.
+- **The gap list:** `O compare --ref <ref dirs> --clone <clone dirs> --out graph-diff.md` matches
+  views by path family and controls by normalised label, compares the shell once, and lists per
+  view what the clone does not render, disables, leaves dead, or never opens. It is a candidate
+  list: confirm each line by hand before it goes in a report.
+
+Per node it replays the cheapest route, closes
+any overlay open on load (recorded as its own node), saves `nodes/<id>/` (screenshot, DOM, AX
+tree, every JSON read, `inventory.json` with what each element did), then fires every element
+once: links are read in a side tab, buttons are clicked, popup triggers hovered, and what opened
+becomes a node (page, modal, menu, in-place state) with an edge. Rows past STATE_BOUND are
+sampled while they keep leading to the same template; shell controls are expanded on two
+templates, then inherited. Disabled controls, text fields and selects are inventoried, not fired.
+
+Safety is mechanical (`scripts/orchestrator/safety.mjs`): session-ending names are never
+clicked; money, messaging, deletion and metered (credit, token) names are queued in
+`pending-writes.jsonl` instead (`--risky probe` clicks them too); and every non-read request
+is aborted in the browser, so a control that writes anyway shows its failure path and is
+queued with the request it tried. A search or report that POSTs a read is allowed with
+`--allow-post <regex>` after you have read its row. `explore` exiting 3 means the login was lost:
+print `BLOCKED` (environment changed).
+
+You keep the judgment the walker cannot make, in Claude in Chrome:
+- every row of `pending-writes.jsonl` that the build needs is a write to capture: **the first
+  write of each kind on the reference is a `BLOCKED` (irreversible action)**. Restoring a write
+  usually means deleting it or reverting an account setting, which is exactly what NEVER
+  forbids, and this runs unattended on the human's real account. So before it fires, print the
+  block naming the write and its restore, and wait. A bare `resume` authorises that write and a
+  restore that needs **no delete** (toggle back, unfollow, edit back to the state recorded in
+  `DIRTIED.md`). A restore that needs a delete is not fired on a bare `resume`: the block says
+  so, and only a reply naming that delete (`resume, allow delete: <what>`) authorises it, for a
   row this run created, recorded in `DIRTIED.md`. Nothing authorises deleting or changing
-  anything the run did not create.
+  anything the run did not create. A metered write is authorised for the exact price and kind
+  shown; anything else re-blocks.
+- what the walker cannot fire: drag, drawing on a map or canvas, typed input and its validation
+  (the QA battery), uploads, keyboard shortcuts, states behind a write. Explore them in Chrome,
+  then `O requeue <node>` or `O gap <node> --reason "..."`;
+- a node whose skeleton says "sample" (a demo record that fires no data request) stays open
+  until a real instance's requests are captured;
+- **negative verdicts are evidenced on every in-scope page**, never from one;
+- new content the T0 snapshot lacks is captured by Playwright as `T0+n`.
 
-The queue is closed when it stops growing. Print the closed tree into
-`discovery/tree.md` with a verdict per node.
+Nothing is terminal because it "probably has nothing behind it": the queue decides. The walk is
+done when `O explore` prints `CLOSED` and `O tree` writes `discovery/tree.md` with a verdict per
+node; `bounded` and `gap` nodes are closed with their reason recorded, and nothing is capped
+without one (a human ruling, an irreversible or paid lane, a blocked third party).
 
 ---
 
-## 5. Phase C: build per node, converge per node
+## 5. Phase C: build unit by unit, in the graph's order
 
-Order within the repo (RL_BUILD's slice logic): environment endpoints and baseline seed,
-then the **shared shell built once as a layout**, then one page component reading page
-configuration rows, then the module library most-shared first, then the first page
-composed and verified, then every other page as **configuration rows only**.
+```bash
+O plan                 # refuses while the graph is open; units: shell, module archetypes, templates
+O next-unit            # claims the next unit whose deps are built, writes discovery/packets/<unit>.md
+O unit-done <unit> [--verified]
+```
 
-Per component, in this order, none skipped:
+The packet is the whole brief for one unit: the members (one component, every other member is
+configuration rows), the capture dirs to build from, what every control must open, the replay
+route of each member (golden traces start there), the writes on it, and the lessons the
+learning store selects for it. A unit can go to a subagent with the packet as its prompt (one
+agent per unit, never two on one template); the unit is not done until its verification below
+has run. The order is the RL_BUILD slice logic made mechanical: environment endpoints and
+baseline seed first, then the **shell built once as a layout**, then module archetypes
+most-shared first, then templates, every page after the first as **configuration rows only**.
+
+Per unit, in this order, none skipped:
 1. Anatomy from the capture (what is a drawer vs a modal, what nests where).
-2. Semantic skeleton (real buttons, links, landmarks, labels).
+2. Semantic skeleton (real buttons, links, landmarks, labels), matching `aria.yml`.
 3. Schema and backend (Pydantic first, thin router, service, migration, OpenAPI
    metadata; every write satisfies W1 to W6 in `docs/BUILD_PROTOCOL.md`).
 4. Wire through `/api`, every query param in the key.
 5. All eight states from the inventory, not the happy path.
-6. **Step 8, computed-style convergence**: diff the full manifest per element against
-   the capture, emit per-property instructions (expected vs got), converge to zero or a
-   declared ceiling with a reason. Nothing is "built" before this.
+6. **Computed-style convergence**: diff the full manifest per element against the capture,
+   emit per-property instructions (expected vs got), converge to zero or a declared ceiling
+   with a reason. Nothing is "built" before this.
 7. Mount it. A component not imported by the page or the shell is dead code.
-8. **Wire it.** A write control ships with its round trip (`scripts/qa/write_roundtrip.mjs`)
-   through the one shared store, on every surface that reads it, in the same change. Anything
-   rendered is interactive: if a write needs a row the seed lacks, derive it from captured
-   fields; otherwise do not render the thing.
-9. **Human-eye pass** (`scripts/qa/human_eye.mjs`) after the slice: no shared stand-in image,
-   no clipped text, no unnamed control, no enabled control that leads nowhere. A finding
-   blocks done.
+8. **Wire it.** A write control ships with its round trip (`scripts/qa/write_roundtrip.mjs`,
+   one spec row per write, every surface that reads it in `expect`) in the same change.
+   Server-rule fuzzing and order dependence run inside the unit that adds a write or a
+   filtered read, never as a closing pass. Anything rendered is interactive: if a write needs a
+   row the seed lacks, derive it from captured fields; otherwise do not render the thing.
+9. **Human-eye pass** (`scripts/qa/human_eye.mjs`, `--dead-controls` at unit end): no shared
+   stand-in image, no clipped text, no unnamed control, no enabled control that leads nowhere.
+   A finding blocks done.
 
 Reuse contract, gate-enforced:
 - one component per module archetype, one row each in `frontend/components/modules/REGISTRY.md`;
 - the page's variant is a prop or a `page_module.params` value, **never a branch on a
   page or league key**, never a per-page file;
 - one page component, one shell layout, for every route;
-- pages after the first land as configuration rows with **0 component files changed**;
-  a non-zero count goes back to the module library.
+- members after the first land as configuration rows with **0 component files changed**;
+  a non-zero count goes back to the module library. A member judged a configuration row by a
+  coarse (role, label) match is inherited-unverified until its per-control style diff passes.
 
 Milestone: **the first page renders real data at localhost within 2 hours of preflight.**
 If it will not, write why into `RESUME.md` and keep going; the deadline is a signal, not
@@ -293,6 +344,17 @@ For every element on every page, before it is done:
 4. **Widths**: the width sweep (`scripts/qa/width_sweep.mjs`, 1024 to 2560 plus N-1 / N / N+1
    at breakpoints) and the structural label audit (`scripts/qa/struct_audit.mjs`): no invented
    or missing bar item, heading, table header or button at any width.
+
+The five QA scripts (`scripts/qa/`, each writes its check record; each is proven by eval
+`X-QA` to fail on its defect) and when they run, so they cost what they are worth:
+
+| script | catches | cost | runs |
+|---|---|---|---|
+| `edition_gate.mjs` | Playwright on another edition, logged out, other theme or language than Chrome | seconds | preflight and before every capture |
+| `struct_audit.mjs` | invented or missing nav item, heading, tab, button, column header, field label | 2 loads a page | unit end, per member |
+| `human_eye.mjs` | stand-in images, broken images, clipped text, unnamed controls, sideways overflow; dead controls with `--dead-controls` | seconds; a reload per control with the flag | unit end |
+| `write_roundtrip.mjs` | a write that answers 200 and never lands on a read or survives a reload | seconds a write | every unit with a write |
+| `width_sweep.mjs` | overflow and layout that break away from 1440 | 2 loads per width a page | PAGE COMPLETE and QA |
 
 Each is a row in `discovery/crosscheck.md`. "Matched at rest at one width" is a partial
 verdict and is written as one. `PAGE COMPLETE` per route prints the table
@@ -359,7 +421,9 @@ STATUS
 
 ## 10. Done, and after done
 
-`DONE` is printed only when: the queue is closed with nothing capped (`bounded` nodes count as closed, their limits recorded); provenance is
+`DONE` is printed only when: `O status` shows the graph CLOSED and every unit built or
+verified, with nothing capped without a recorded reason (`bounded` nodes count as closed,
+their limits recorded); provenance is
 100 percent; every route passes PAGE COMPLETE and every modal MODAL COMPLETE; every
 golden trace is clean on four channels; the reuse table shows 0 component changes on
 pages after the first; all gates green; the corpus record and its "what the method got

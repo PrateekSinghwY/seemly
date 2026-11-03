@@ -15,10 +15,21 @@ const LOCK_CSS = '*,*::before,*::after{animation:none!important;transition:none!
 // until it draws a new value must still terminate), crypto.randomUUID.
 function inPage({ t0, css }) {
   const RealDate = Date;
-  class FrozenDate extends RealDate {
-    constructor(...a) { if (a.length === 0) super(t0); else super(...a); }
-    static now() { return t0; }
+  // A function, not a class: page code calls `Date()` without `new` (it returns a string),
+  // and a class constructor throws on that, which would break the reference's own
+  // scripts during capture.
+  // Constructed with new.target and given its own prototype, so an instance's
+  // `constructor` is FrozenDate: `new Date().constructor.now()` must read t0, not the
+  // live clock.
+  function FrozenDate(...a) {
+    if (!new.target) return new RealDate(t0).toString();
+    return Reflect.construct(RealDate, a.length === 0 ? [t0] : a, new.target);
   }
+  FrozenDate.prototype = Object.create(RealDate.prototype, {
+    constructor: { value: FrozenDate, writable: true, configurable: true },
+  });
+  Object.setPrototypeOf(FrozenDate, RealDate);
+  FrozenDate.now = () => t0;
   FrozenDate.parse = RealDate.parse;
   FrozenDate.UTC = RealDate.UTC;
   window.Date = FrozenDate;

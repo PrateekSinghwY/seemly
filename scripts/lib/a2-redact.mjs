@@ -29,5 +29,5 @@ export async function redactA2(page) {
       return { x: Math.round(r.left), y: Math.round(r.top + scrollY), w: Math.round(r.width), h: Math.round(r.height) };
     }).filter(r => r.w > 4 && r.h > 4);
     return { count: els.length, regions };
-  }, { SEL: A2_SELECTOR, HEAD: A2_HEADING_SOURCE, HEAD_SCOPE: A2_HEADING_SCOPE, HEAD_NEVER: A2_HEADING_NEVER, KEEP: A2_KEEP.join(',') });
+  }, { SEL: A2_SELECTOR, HEAD: A2_HEADING_SOURCE, HEAD_SCOPE: A2_HEADING_SCOPE, HEAD_NEVER: A2_HEADING_NEVER, KEEP: A2_KEEP });   // A2_KEEP is already a comma-joined selector string
 }

@@ -2,7 +2,7 @@
 // runs the ones that have been made executable (evals/runnable.jsonl) and reports the rest
 // as manual, so "every case still passes" is a command instead of a promise.
 //
-// A runnable case: { id, cmd: [argv...], cwd?, expectExit: 0, bad?: { cmd, expectExit: != 0 } }
+// A runnable case: { id, cmd: [argv...], cwd?, env?, timeoutMs?, expectExit: 0, bad?: { cmd, expectExit: != 0 } }
 // `bad` is the same check pointed at a fixture that contains the defect: it must FAIL there,
 // or the check was never seen failing and does not count (distill.md, Step 3 "Test").
 
@@ -21,7 +21,7 @@ export function runnable(path) {
 
 function exec(spec, root) {
   const [bin, ...args] = spec.cmd;
-  const r = spawnSync(bin, args, { cwd: spec.cwd ? join(root, spec.cwd) : root, encoding: "utf8", timeout: spec.timeoutMs ?? 120000 });
+  const r = spawnSync(bin, args, { cwd: spec.cwd ? join(root, spec.cwd) : root, encoding: "utf8", timeout: spec.timeoutMs ?? 120000, env: { ...process.env, ...(spec.env ?? {}) } });
   return { code: r.status ?? -1, out: `${r.stdout ?? ""}${r.stderr ?? ""}`.trim().split("\n").slice(-5).join("\n") };
 }
 

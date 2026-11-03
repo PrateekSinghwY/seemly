@@ -15,6 +15,21 @@ enforces on every build.
   module composition are induced from it with provenance `html-hydrated`.
 - Id formats and ordering are matched exactly. A wrong id format leaks a learnable
   pattern to the agent being trained.
+- The reference's wire quirks are mirrored on the wire, not in the store: a field with
+  several meanings or formats under one name, an id that is a string everywhere but a
+  number on one endpoint. Store canonical values (SI units, ISO-8601 UTC, string ids) and
+  reproduce each quirk in that endpoint's serializer (pricelabs/S2, S3).
+- The display format is measured from the rendered page, not assumed from the payload: a
+  payload's `*_formatted` field can differ from what the page prints (pricelabs/R-T2).
+- Derived classifications (percentile bands, buckets, tiers) are reproduced from the
+  reference's observed counts: test each candidate rule (equal-index vs value threshold,
+  which side ties fall) against the captured distribution and keep the one that matches
+  exactly (pricelabs/R-E).
+- Unobserved server behaviour (a default radius, a percentile method, a read with no
+  observed traffic) is a named constant or a documented choice in the observed namespace,
+  recorded as a doubt with confidence; never invented rows to make a source look
+  populated, and a client-only list that fires no request may be a typed constant
+  (pricelabs/S-A9 to S-A13).
 - Check `docs/MCP_SCHEMA_REFERENCE.md` conflicts before defining any shape; grep for an
   existing near-miss table before creating one. The parallel near-miss table is the
   number one schema defect.
@@ -36,6 +51,12 @@ a surface reads is written by something; every collected field round-trips.
 - One migration per module, linear chain, never edited after commit; `downgrade()`
   works and is round-tripped on a populated copy.
 - Index every FK and every filtered or sorted column.
+- Id sets in request bodies are intersected with the ids the caller's record owns: unknown
+  ids dropped and counted, an all-unknown set refused with a 422 naming them, path ids
+  bounded like body ids (`ge=1`). An unvalidated set once zeroed a whole surface
+  (pricelabs/SR2).
+- A migration that adds a NOT NULL column ships with every seeder construction of that
+  table updated, and is not done until `reset` runs clean (pricelabs/G8).
 - Environment endpoints ship with the first migration: `POST /reset`, snapshot and
   restore, state introspection (rewards read rows, never the DOM).
 
@@ -56,6 +77,11 @@ a surface reads is written by something; every collected field round-trips.
 
 - Tier 1 source only while the reference is reachable: captured payloads and the
   hydrated DOM. No synthesis, no fixtures on a production path, no canned fallback.
+- Seed guards are per row (upsert by natural key), never "table has rows, skip": an
+  all-or-nothing guard means a catalog can never grow (pricelabs/R-T4).
+- The frozen clock is app time for both sides: the backend and the frontend read the same
+  environment date variable, and every date-anchored view uses it, never the wall clock
+  (pricelabs/PR18).
 - Seeded RNG, frozen clock at T0, stable ids in the reference's format, through the
   service layer, `pnpm reset && pnpm seed` twice byte-identical, reset idempotent,
   snapshot restores byte-identically, state contract regenerated (never hand-edited).

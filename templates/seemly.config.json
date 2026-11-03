@@ -1,0 +1,33 @@
+{
+  "_comment": "Per-build QA config for scripts/qa/*.mjs. Copy to never_to_be_pushed/discovery/seemly.config.json and fill it; nothing here is tracked with a target in it.",
+  "reference": {
+    "origin": "https://www.example.com",
+    "host": "www.example.com",
+    "edition": { "cookie": "edition", "value": "en-us" },
+    "editionPaths": ["/"]
+  },
+  "clone": { "origin": "http://localhost:3000" },
+  "cdp": "http://127.0.0.1:9222",
+  "routes": ["/", "/section/", "/section/list"],
+  "widths": [1024, 1280, 1440, 1680, 1920, 2560],
+  "layout": { "selectors": ["header", "nav", "main", "footer", "[data-lay]"], "tolerancePx": 2 },
+  "struct": { "skip": ["iframe", "footer", "[data-ad]"] },
+  "qa": {
+    "cardSelectors": ["li", "tr", "article", "[data-ref]"],
+    "fallbackImages": ["/img/neutral-placeholder.png"],
+    "enabledSelectors": ["[data-ref=DatePicker] a", "[data-ref=WeekStrip] a"]
+  },
+  "writes": {
+    "storeUrl": "http://localhost:8100/api/favorites",
+    "writeUrlIncludes": "/api/favorites",
+    "refusePorts": [3000, 8000],
+    "cases": [
+      {
+        "label": "entity page follow",
+        "url": "/section/entity/_/id/123",
+        "button": "[data-follow=\"entity-123\"]",
+        "mirrors": [{ "label": "home rail", "url": "/", "selector": "[data-favorite=\"entity-123\"]" }]
+      }
+    ]
+  }
+}

@@ -12,13 +12,18 @@ Site-agnostic: nothing here names a target. A build's data lives in its own
 
 | step | what | files | status |
 |---|---|---|---|
-| 0 | skill under git, baseline commit | `.gitignore` | done 2026-10-14 (local; remote pending) |
-| 1 | graph engine: format, dedupe, templates, priority queue, shortest path, build order, loops | `heap.mjs` `algorithms.mjs` `graph.mjs` `store.mjs` `cli.mjs` | done 2026-10-14, 16 tests |
-| L | learning engine: lesson store, escalation ladder, per-node lesson selection, eval runner, scorecard, fix-commit miner | `../../learning/` | done 2026-10-14, 11 tests; see `learning/README.md` |
-| 2 | live diagram: artifact drawing the graph from `events.jsonl` | `live.mjs` + artifact | next |
-| 3 | explore-only coordinator: pop, capture, inventory, push children, until closed | `run.mjs` + Workflow script | |
-| 4 | build workers, one at a time in build order | `run.mjs` build phase | |
-| 5 | `SKILL.md` drives the coordinator instead of prose | `SKILL.md`, `reference/graph.md` | |
+| 0 | skill under git, baseline commit | `.gitignore` | done 2026-10-14 (local only, by choice) |
+| 1 | graph engine: format, dedupe, templates, priority queue, shortest path, build order, loops | `heap.mjs` `algorithms.mjs` `graph.mjs` `store.mjs` `cli.mjs` | done 2026-10-14 |
+| L | learning engine | `../../learning/` | done 2026-10-14; packets call `select` per unit since 2026-10-26 |
+| 2 | live diagram from the graph | `views.mjs` (`graph.html`, `tree.md`) | done 2026-10-26 |
+| 3 | explore coordinator: pop, reach by replay route, capture, fire every element, push children, until closed; writes aborted, risky names held | `explore.mjs` `page-probe.mjs` `safety.mjs` `bound.mjs` `run.mjs` | done 2026-10-26, e2e on a fixture app (`X-EXPLORE`) |
+| 4 | build phase: units in dependency order, one at a time, a packet per unit | `build.mjs` `run.mjs` | done 2026-10-26 (`X-FLOW`) |
+| 5 | `SKILL.md` drives the coordinator instead of prose | `SKILL.md` sections 4-5, `reference/graph.md` | done 2026-10-26 |
+| 6 | first real audit (reference vs clone, 2 logged-in areas): parallel workers per area, saved-login browsers instead of one CDP window, clean SIGTERM, failed-request log per click, write-only nodes closed as bounded, template sampling, walked-graph diff | `explore.mjs` `compare.mjs` `../lib/export-login.mjs` | done 2026-10-26 |
+
+Not done: the walker does not drag, draw, type or upload (Chrome does, SKILL.md section 4);
+the live diagram is regenerated per chunk, not streamed; workers share no graph file, so
+each area's walk is diffed from its own copy.
 
 ## How it works
 
@@ -110,8 +115,22 @@ reference's "the queue decides, not the builder" as a check.
 
 ## Use
 
+The commands SKILL.md runs, from the clone repo's root (`RL_REPO` overrides):
+
 ```bash
-node --test 'test/*.test.mjs'                 # or: npm test
+node run.mjs init --target <url> [--prefix /path] [--entry <url>]...
+node run.mjs explore --max-nodes 40 [--risky probe] [--allow-post <regex>] [--cdp http://127.0.0.1:9222] [--headed]
+node run.mjs status | tree | live | pending | frontier | route <id> | loops
+node run.mjs requeue <id> | requeue --failed | gap <id> --reason "..."
+node run.mjs explore --dir <copy> --only-prefix /area ...       # one parallel worker per area
+node run.mjs compare --ref <dirs> --clone <dirs> --out diff.md # reference walk vs clone walk
+node run.mjs plan | next-unit | packet <unit> | unit-done <unit> [--verified]
+```
+
+Engine views and tests (the end-to-end test needs Playwright, resolved from `RL_REPO`):
+
+```bash
+RL_REPO=<clone repo> node --test 'test/*.test.mjs'
 node cli.mjs <discovery-dir> stats            # counts, frontier size, template histogram
 node cli.mjs <discovery-dir> frontier         # what gets explored next, in order
 node cli.mjs <discovery-dir> order            # build order

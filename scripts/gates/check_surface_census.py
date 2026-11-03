@@ -27,7 +27,28 @@ sys.path.insert(0, str(next((d for d in (_HERE / "lib", _HERE.parent / "lib") if
 from check_record import write_check_record  # noqa: E402
 
 NAME = "surface_census_evidence"
-ROOT = Path(__file__).resolve().parents[1]
+def _repo_root() -> Path:
+    """The repository the census belongs to, never this skill's own folder.
+
+    RL_REPO wins; else the git top-level of the working directory; else the working
+    directory. The script lives under .claude/skills/seemly/scripts/gates/, so a path
+    derived from __file__ would look for discovery data inside the skill and always skip.
+    """
+    import os, subprocess
+    env = os.environ.get("RL_REPO")
+    if env:
+        return Path(env).resolve()
+    try:
+        top = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True,
+                             text=True, check=True).stdout.strip()
+        if top:
+            return Path(top)
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    return Path.cwd().resolve()
+
+
+ROOT = _repo_root()
 CENSUS = ROOT / "never_to_be_pushed" / "discovery" / "surface-census.md"
 PAGES = ("home", "nfl", "ncaaf", "nba", "wnba")
 
@@ -83,7 +104,15 @@ def check(text: str, where: str = "surface-census.md") -> tuple[int, list[str]]:
         if min(idx.values()) >= 0:
             cols = idx
             continue
-        if cols is None or max(cols.values()) >= len(cells):
+        if cols is None:
+            # A table row with no recognised Class / Detected / Instances header above it.
+            # Skipping it would let a census in an unexpected shape pass having checked
+            # nothing, so a negative verdict in such a table is itself a failure.
+            if NEGATIVE.search(line):
+                failures.append(f"{where}:{lineno}  NOT DETECTED row in a table with no "
+                                f"recognised Class / Detected / Instances (or Evidence) header")
+            continue
+        if max(cols.values()) >= len(cells):
             continue
         if not NEGATIVE.search(cells[cols["detected"]]):
             continue
@@ -107,7 +136,11 @@ def main() -> int:
         print("check_surface_census: no discovery/surface-census.md — skipped")
         return 0
 
-    checked, failures = check(CENSUS.read_text(), str(CENSUS.relative_to(ROOT)))
+    text = CENSUS.read_text()
+    checked, failures = check(text, str(CENSUS.relative_to(ROOT)))
+    if checked == 0 and not failures and NEGATIVE.search(text):
+        failures.append(f"{CENSUS.relative_to(ROOT)}: NOT DETECTED appears but no verdict row "
+                        f"was recognised; the census schema is not one this gate can read")
     print(f"check_surface_census: {checked} NOT DETECTED verdict(s) examined")
     for f in failures:
         print(f"    {f}")

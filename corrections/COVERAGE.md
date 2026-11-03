@@ -150,3 +150,68 @@ QM = `reference/qa-mode.md`.
 | 05 | "fixed" = path replay + same-state side-by-side render diff | QM loop step 7, same-state render diff; S section 12; X symptom-only-proof; E53, E54 |
 | lesson | count claims need a controlled before/after | QM counter claims; X stale-count-note |
 | lesson | bundle branch shipped without live proof | QM bundle vs live; X bundle-branch-shipped; E56 |
+
+## 2026-10-26-pricelabs (logged-in pricing dashboard; LESSONS, NOTES, ASSUMPTIONS, corpus record, fix PRs; promoted directly 2026-10-26)
+
+QM = `reference/qa-mode.md`, B = `reference/backend.md`, BP = `reference/method/BUILD_PROTOCOL.md`.
+Ids are those in `2026-10-26-pricelabs/CORRECTIONS.md`.
+
+| # | gist | lives in |
+|---|---|---|
+| A1 | enumerate, never eyeball | P; X Eyeballed census; T listeners; E57 |
+| A2, E1 | no unmeasured percentage; lead with what is not done | P; X Unmeasured percentage |
+| A3, A4 | probes and assertions must be falsifiable | P; T map probe; X Unfalsifiable assertion; E59 |
+| A5 | paused reviewer is not a clean review | P; X Vacuous green; C reviewer_ran; E60 |
+| B1, B3 | apology instead of feature; stale disclaimers | BP Apology for a feature; QM disabled treatment; C no_unavailable_copy; E61, E62 |
+| B2 | restyled checkbox lost its tick | BP State glyph lost; QM interactive states; E63 |
+| B4 | native select | BP Native browser UI; E64 |
+| B5 | SSR-unsafe library | BP SSR-unsafe library; D Rendering libraries |
+| C1, C2, N3 | account holder PII in seed and OpenAPI examples; session token; human-supplied address | D Personal data; C personal_detail_grep; E65 |
+| C3 | seeded id in runtime code | C no_literal_dictionary; BP Seeded id in code |
+| C4, S1 | vendor host at runtime | D Third-party runtime hosts; C no_external_runtime_hosts; BP; E66 |
+| D1, D2 | attribution trailers; branch named | D Commit attribution |
+| D3 | concurrent write suites | P; X; BP process rules |
+| D4, AG3, PR16, PR19 | state contract and harness files | C state_schema_current; D Harness and fleet files |
+| E2, E3, F2, F3, G1, G2, G5 | evidence and measurement habits | P |
+| E4 | shallow absence | P; X Shallow absence; E81 |
+| F1, R-A, R-M3 | overlay hides the census | P; CR whole surface; C census_unobstructed; BP Phase 2; X; E58 |
+| G3, G4 | conflicting utility; collapsing table | BP; E78 |
+| G6 | which process serves the route | X Stale process (tightened) |
+| G7 | reset under a live server | X; BP process rules; E74 |
+| G8 | NOT NULL column, seeder untouched | C migration_reset_clean; B; X; E73 |
+| G9 | crashed trace leftovers | C golden_traces; X; BP; E75 |
+| N1, N2, R-IRR | metered writes: exact authorisation, capture before firing | D Metered and priced writes; CR; X Approval stretched, Metered first; E69, E70 |
+| N4 | permission guard refused a purchase click | D Harness refusals; T; E71 |
+| S2, S3, S-A9..S-A13, R-E, R-T2, R-T4, SR2 | wire quirks, unobserved behaviour, derived classes, display format, seed guards, id sets | B; BP Unvalidated id set |
+| S4, S6 | library by DOM signature, pinned | D Rendering libraries |
+| S5, CAL-1, PR3, AG6, PR18 notes | build-only: human-directed order, corpus sizing model, scaffold template, repo conventions | - |
+| S9, R-N3 | inherited controls by label match; URL-addressable state | proposed graph.md (distill report) |
+| S10, IE2, R-T1, R-trap1 | states only input reveals; read client-state mutations; data-volume variants; real instance | CR whole surface; QM account-state variants; X Sample read as the contract; E68 |
+| R-B, R-M2 | theme in the lock | CR Gate 0; C theme_pinned; T; X; E67 |
+| R-C | third-party tokens | CR |
+| R-D, SC1, R-F, R-M1, R-N1, SC2 | bundle as a source | CR bundle |
+| R-T3 | join inventories | CR |
+| R-T5 | write before ready | BP |
+| R-M4, T1 | queue reconciliation | C queue_reconciled; BP Phase 2; X Queue out of date; E76; proposed graph.md |
+| R-M5, CAL-2 | closing passes as in-build gates | C server_rules_fuzzed; proposed SKILL.md |
+| R-M6, SR1 | valid domain before fuzz; counters | QM validation bounds; C server_rules_fuzzed; X; E72 |
+| R-N2 | export parity | C export_parity |
+| R-18 | logged-in-only apps | D Logged-in-only apps |
+| T2 | stale golden traces | C golden_traces; X; E77 |
+| T3 | scoped copy oracle | CR text nodes; X |
+| T4 | capped only with a reason | D Capped items; C queue_reconciled; proposed SKILL.md §10 |
+| IE1 | reference a11y defects | D Reference a11y defects |
+| PR18-1, -4, -6 | list chrome, bulk selection, option lists | QM list chrome, bulk selection; E82 |
+| PR18-2, -5, -8 | filter surfaces and fan-out; layering; pressed tool states | QM filter surfaces, layering and containment, interactive states; E80, E83 |
+| PR18-3 | write confirmations | QM; E84 |
+| PR18-7 | invented hint icons | QM no invented hints; BP Invented UI |
+| PR18-9 | panel affordances | QM |
+| PR18-10 | toast copy shared | QM feedback after actions (existing) |
+| PR18-11 | app time | QM date-anchored views; B; E79 |
+| PR18-12 | header layering | QM layering and containment |
+| AG1 | four-part disabled | QM disabled treatment; BP Under-disabled |
+| AG2 | delete the whole slice | BP process rules |
+| AG4 | placeholder table | D Personal data |
+| AG5 | tiered validation | existing P (batched gates) |
+| AG7 | AGENTS links BUILD_PROTOCOL | proposed SKILL.md |
+| repo BUILD_PROTOCOL | identical to the skill copy | nothing to carry |

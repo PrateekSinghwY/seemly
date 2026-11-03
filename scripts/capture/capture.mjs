@@ -43,7 +43,10 @@ const scrubKey = k => keyWords(k).some(w =>
 // run with no spaces or slashes) is deleted with its key.
 const EMAIL = /[\w.+-]+@[\w-]+\.[\w.-]+/g;
 const PHONE = /(?:\+?1[\s.-]?)?\(?\b\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}\b/g;
-const TOKEN = /^(?:eyJ[\w-]+\.[\w-]+\.[\w-]+|(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{32,}={0,2})$/;
+// Opaque secrets only: a JWT, or a 32+ char run with no hyphens (so slugs and canonical
+// UUIDs survive) that mixes digits with BOTH letter cases (so hex content ids and hashes
+// survive), or long padded base64. Session and device ids are already removed by key.
+const TOKEN = /^(?:eyJ[\w-]+\.[\w-]+\.[\w-]+|(?=[A-Za-z0-9_]*\d)(?=[A-Za-z0-9_]*[a-z])(?=[A-Za-z0-9_]*[A-Z])[A-Za-z0-9_]{32,}={0,2}|[A-Za-z0-9+/]{40,}={1,2})$/;
 const DROP = Symbol('drop');
 const scrubLog = [];
 function scrub(v, path = '$') {
@@ -247,8 +250,11 @@ for (const [key, url] of PAGES) {
 
 writeFileSync(`${ROOT}/raw/${STAMP}/_summary.json`, JSON.stringify({ T0, summary }, null, 2));
 writeFileSync(`${ROOT}/scrub-log.jsonl`, scrubLog.map(o => JSON.stringify(o)).join('\n'));
+// Persisted beside the snapshot so a later NOT CAPTURED verdict can be checked against it.
+writeFileSync(`${ROOT}/raw/${STAMP}/blocked.jsonl`, blocked.map(o => JSON.stringify(o)).join('\n'));
 console.log(`\nT0 ${T0}`);
 console.log(`scrub deletions: ${scrubLog.length}`);
+console.log(`blocked requests: ${blocked.length} -> scrape/raw/${STAMP}/blocked.jsonl`);
 console.log(`raw -> scrape/raw/${STAMP}/`);
 await page.close();
 await browser.close();

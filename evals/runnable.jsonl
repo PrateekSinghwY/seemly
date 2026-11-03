@@ -1,2 +1,6 @@
 {"id":"X-ORCH","title":"orchestrator graph engine suite","cmd":["node","--test","test/graph.test.mjs"],"cwd":"scripts/orchestrator","expectExit":0}
 {"id":"X-LEARN","title":"learning engine suite","cmd":["node","--test","test/learning.test.mjs"],"cwd":"learning","expectExit":0}
+{"id":"X-FLOW","title":"orchestrator scope, bounds, safety, build units, tree","cmd":["node","--test","test/flow.test.mjs"],"cwd":"scripts/orchestrator","expectExit":0}
+{"id":"X-EXPLORE","title":"explorer walks a fixture app to a closed graph: modals, menus, tabs, on-load overlay, sampled rows, no write reaches the server (needs RL_REPO with playwright)","cmd":["node","--test","test/explore.test.mjs"],"cwd":"scripts/orchestrator","env":{"SEEMLY_REQUIRE_BROWSER":"1"},"timeoutMs":600000,"expectExit":0}
+{"id":"X-QA","title":"the five QA scripts each fail on their planted defect and pass a clean page (needs RL_REPO with playwright)","cmd":["node","--test","--test-concurrency=1","test/qa.test.mjs"],"cwd":"scripts/qa","env":{"SEEMLY_REQUIRE_BROWSER":"1"},"timeoutMs":600000,"expectExit":0}
+{"id":"X-COMPARE","title":"walked-graph diff: missing, disabled-only-on-clone, dead, never-opened controls; missing views; shell compared once","cmd":["node","--test","test/compare.test.mjs"],"cwd":"scripts/orchestrator","expectExit":0}

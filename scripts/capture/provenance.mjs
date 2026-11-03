@@ -81,4 +81,7 @@ console.log(`             ${skippedNonText} script/style nodes excluded`);
 if (counts.unresolved) {
   console.log('\nfirst unresolved rows:');
   rows.filter(r => r.kind === 'UNRESOLVED').slice(0, 10).forEach(r => console.log(`  [${r.page}/${r.module}] ${r.text.slice(0,70)}`));
+  // SKILL.md Phase A: unresolved must be 0. Printing the count and exiting 0 would be a
+  // vacuous green.
+  process.exitCode = 1;
 }

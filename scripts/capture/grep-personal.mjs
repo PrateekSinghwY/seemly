@@ -2,7 +2,7 @@
 // Forbidden literals are matched by SHA-256 so this file never contains them.
 import { readFileSync, readdirSync, statSync, existsSync } from 'fs';
 import { createHash } from 'crypto';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { join, basename } from 'path';
 const REPO = process.env.RL_REPO || process.cwd();   // repo root; set RL_REPO or run from the repo
 
@@ -18,8 +18,8 @@ const forbidden = new Set(
 );
 
 let gitName = '', gitEmail = '';
-try { gitName  = execSync('git -C ' + REPO + ' config user.name',  {encoding:'utf8'}).trim(); } catch {}
-try { gitEmail = execSync('git -C ' + REPO + ' config user.email', {encoding:'utf8'}).trim(); } catch {}
+try { gitName  = execFileSync('git', ['-C', REPO, 'config', 'user.name'],  {encoding:'utf8'}).trim(); } catch {}
+try { gitEmail = execFileSync('git', ['-C', REPO, 'config', 'user.email'], {encoding:'utf8'}).trim(); } catch {}
 
 const allowlist = new Set(
   existsSync(join(ROOT, 'tools/personal-allowlist.tsv'))

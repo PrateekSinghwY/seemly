@@ -1,5 +1,15 @@
 # scripts/: working templates from the first build
 
+Two folders are not templates and are never copied into a repo: they run from the skill and
+load Playwright from the repo they work on (`lib/pw.mjs`).
+
+- `orchestrator/`: the surface graph engine, the explorer and the build coordinator
+  (`run.mjs`; SKILL.md sections 4-5; its own README).
+- `qa/`: `edition_gate`, `struct_audit`, `width_sweep`, `human_eye`, `write_roundtrip`, each
+  writing its check record (`reference/checks.md`), each proven by eval `X-QA`.
+
+The rest of this file is about the templates.
+
 Every file here ran in a real build (ESPN, Sept 2026) and caught real defects. They are
 **templates**: some carry ESPN-specific selectors, route maps and module names that the
 skill replaces on first run in a new repo (grep `espn`, `CLONE`, `A2_` and the route

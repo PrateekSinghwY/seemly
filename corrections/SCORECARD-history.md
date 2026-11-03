@@ -1,0 +1,1 @@
+| 2026-09-25 | espn-scores (NBA/WNBA scoreboard + game pages) | size parity 58/75 (17 = drift or harness) · pixel 0px 0/75, <3% 29/75 · traces 219/228 (9 waived) · font diff clean on game routes · literal 0 · PII 0 · interventions 13 · questions 0 · lessons 12 |

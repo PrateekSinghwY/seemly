@@ -15,12 +15,12 @@
 import { chromium } from 'playwright';
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'fs';
 import { PNG } from 'pngjs';
-import { clipName, assertUniqueClipNames } from './lib/clip-name.mjs';
-import { latestStamp } from './lib/snapshot.mjs';
-import { LOCK_VIEWPORT } from './lib/lock.mjs';
-import { BLOCKED_URLS } from './lib/block-list.mjs';
-import { redactA2 } from './lib/a2-redact.mjs';
-import { writeCheckRecord } from './lib/check-record.mjs';
+import { clipName, assertUniqueClipNames } from '../lib/clip-name.mjs';
+import { latestStamp } from '../lib/snapshot.mjs';
+import { LOCK_VIEWPORT } from '../lib/lock.mjs';
+import { BLOCKED_URLS } from '../lib/block-list.mjs';
+import { redactA2 } from '../lib/a2-redact.mjs';
+import { writeCheckRecord } from '../lib/check-record.mjs';
 
 const DISCOVERY = 'never_to_be_pushed/discovery/scrape';
 const BASE = process.env.CLONE_BASE || 'http://localhost:3000';

@@ -92,4 +92,5 @@ not rules: distill decides which ones generalise beyond ESPN.
   fixture to become executable (`X-ORCH` and `X-LEARN` are the first two runnable cases).
 - `reference/*.md` rows have not been imported into `lessons.jsonl`; both exist side by
   side until `promote` moves them.
-- The orchestrator does not yet call `select` per node; that lands with step 3.
+- `select` is called per build unit (`run.mjs next-unit` puts the selected lessons in the
+  packet), not yet per explored node.

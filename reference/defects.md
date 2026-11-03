@@ -14,8 +14,8 @@ appends rows.
 | **Wrong granularity match** | substring matches on ids or headings swallow real content (`[id*=fav]` ate the legal footer, heading test ate articles) | A2 heading, favfeed-footer |
 | **Oracle blind to the slice** | the pixel oracle must cover the whole page, header to footer, audited against the PNG | shell had no clip |
 | **Built but never mounted** | a component not imported by the page is dead code marked done | slice 2 |
-| **Stale process mistaken for the build** | a server already on the port predates your changes; start your own on a free port | Tailwind emitting nothing |
-| **Vacuous green** | a check that exits 0 having checked nothing; every check writes `ran` and a count | check_a2_assets, page_complete without app |
+| **Stale process mistaken for the build** | a server already on the port predates your changes; start your own on a free port. Before debugging a 404 on a route you just added, confirm which process serves it (a second backend without reload answered through the proxy) | Tailwind emitting nothing, pricelabs/G6 |
+| **Vacuous green** | a check that exits 0 having checked nothing; every check writes `ran` and a count. A paused external reviewer reported as "0 unresolved" is the same defect | check_a2_assets, page_complete without app, pricelabs/A5 |
 | **Hook discards status** | a hand-edited git hook swallowed the sweep's exit code; hooks come from the tool-managed config | pre-push |
 | **Deferral without release** | a deferral with no trigger stays blocked forever; every one carries a check re-tested per slice | deferred: geo |
 | **Scrub keys, not values** | identity lives in values too (46 journalist emails in payload values) | scrape Part 3 |
@@ -27,6 +27,24 @@ appends rows.
 | **Resize trusted** | an MCP resize reported success while the page measured the old width; measure in-page | 1920 vs 1440 |
 | **Literal in examples** | captured strings leaked into OpenAPI field examples | slice 2 gate catch |
 | **Fresh-eyes skipped** | two slices called done without the no-context review; it later found 39 findings including nothing mounted | slice 1, 2 |
+| **Eyeballed census** | a census read off a screenshot missed a late-loading iframe, a `mailto:` anchor and five tooltips; enumerate by selector query plus listener map | pricelabs/A1 |
+| **Census behind an overlay** | an on-load modal hid 923 nodes from the AX tree; the census found 4 controls of 198 and reported no error. Count with overlays dismissed | pricelabs/R-A, F1 |
+| **Unfalsifiable assertion** | a probe with an invalid argument matched every feature and an `includes()` assertion passed for any data; name the failing value before writing an assertion | pricelabs/A3, A4 |
+| **Unmeasured percentage** | "100 percent end to end" reported with 9 of 1,771 items verified; report verified and unverified counts | pricelabs/A2, E1 |
+| **Consistently wrong lock** | Gate 0 passed byte-identically three times in the wrong theme; the lock asserts values, not only agreement | pricelabs/R-B |
+| **Sample read as the contract** | a free sample record fired no data calls; a real record fired two large payloads. Measure on a real instance | pricelabs/R-trap1 |
+| **Metered first, pixels never** | the only credit was spent before the style pass existed; the flow can never be re-entered on that account, so its steps have no computed styles | pricelabs/R-IRR |
+| **Approval stretched** | an approval for one credit nearly covered a screen quoting a recurring subscription; authorisation is for the exact action and price shown | pricelabs/N2 |
+| **Fuzz case that wrote** | a boundary value that looked invalid (`0`) was valid (it meant the smallest category) and spent a token; enumerate the valid domain, then fuzz outside it, counters snapshotted | pricelabs/R-M6 |
+| **Shallow absence** | a tab recorded as "not built" held a populated entity with two tabs and two create modals; an absence needs presence-grade evidence | pricelabs/E4 |
+| **Queue out of date** | items built and never marked, others marked and never built; the queue under-reported the code and over-reported the process twice | pricelabs/T1 |
+| **Stale golden trace** | eight trace assertions encoded states the build had moved past and would have passed forever; re-run every trace per slice | pricelabs/T2 |
+| **Unscoped copy oracle** | a whole-app bundle list (1,857 strings, mostly markup and other areas) was used as one target's stop condition | pricelabs/T3 |
+| **Concurrent write suites** | two trace suites run at once interleaved writes and produced 15 phantom failures | pricelabs/D3 |
+| **Reset under a live server** | a reset recreated the database file while the server's pool held the unlinked one; every write failed read-only. Restart the server after a reset | pricelabs/G7 |
+| **Leftover from a crashed run** | a crashed trace left its own row behind and the next run failed on "already exists"; write traces clean up in `finally`, reseed before believing a state failure | pricelabs/G9 |
+| **Seeder behind the migration** | a NOT NULL column was added three times without updating the seeder; the seed aborted midway and an unrelated surface rendered empty | pricelabs/G8 |
+| **Review comment as order** | a bot reviewer's request would have documented an unreachable error; comments are verified against the code and declined with a reason when they conflict | pricelabs/E3 |
 | **Push on own initiative** | pushing and opening a PR without being asked; now push to feat/* is allowed, PRs are not | slice 1 |
 | **Matched at rest, called built** | pixels at one width and at rest were read as a finished module; overlays, replays and strips behind clicks were never opened | fb/54-58 |
 | **Static tree** | the graph was treated as closed after the first walk; clicks found later were never queued | fb/54 |
@@ -66,3 +84,11 @@ appends rows.
 | one-record-gate | a step captured on one record applied to every sibling record | read the enabling field from each record's own config | QA 2026-10-12, consent step on a game that has none |
 | stale-count-note | trusting an older note that a count never moves | a controlled before/after on a quiet target; supersede the note in place | QA 2026-10-12, large-group size |
 | bundle-branch-shipped | building a branch read from the bundle without seeing it live | live decides; remove what live does not show in that state | QA 2026-10-12, post-join callout |
+
+<!-- promoted 2026-11-02 from the rl_pricelabs local overlay -->
+
+## 2026-10-29 — pricelabs dashboard re-check (run qa)
+- A measurement recorded in code comments can be stale: ChartCard said "17px, not 16" from an old 1132-wide capture; the live page now pads 16 and rules every header. Re-measure the live reference before trusting a comment's numbers.
+- Opacity-based hover reveals fail for disabled controls: `disabled:opacity-40` wins at rest. Mirror the reference's `visibility: hidden`.
+- A tooltip's container font is not its text font: the chip measured 14/600 but the visible text is an inner <p> at 12/400. Measure the leaf.
+- Compare at the same viewport (Playwright 1512x827 for the clone) — a 90%-zoomed tab changes wrapping and every vertical offset.

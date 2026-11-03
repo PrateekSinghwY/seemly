@@ -20,7 +20,8 @@ export const EDGE_KINDS = ["click", "hover", "keyboard", "scroll", "redirect", "
  */
 export const EDGE_COST = { redirect: 0, hover: 0.5, scroll: 0.5, click: 1, keyboard: 1, navigation: 1, write: Infinity };
 
-const TRACKING = /^(utm_[a-z]+|gclid|fbclid|msclkid|mc_[a-z]+|_ga|ref|ref_src|cmpid)$/i;
+// Tracking and cache-busting keys: a value that changes on every load must not make a new node.
+const TRACKING = /^(utm_[a-z]+|gclid|fbclid|msclkid|mc_[a-z]+|_ga|ref|ref_src|cmpid|cachebuster|cache_buster|_t|_ts|ts|timestamp|nocache|_)$/i;
 
 /** Query keys sorted, tracking keys and the fragment dropped, trailing slash trimmed. */
 export function canonicalUrl(raw) {
@@ -81,6 +82,8 @@ export class Graph {
     const node = {
       id,
       url: canonicalUrl(url),
+      // The URL as found: canonicalising can change what a server answers (a trailing slash).
+      href: url,
       state,
       kind,
       label: label ?? `${new URL(url).pathname}${state ? ` [${state}]` : ""}`,
@@ -105,6 +108,20 @@ export class Graph {
     const n = this.data.nodes[id];
     if (!n) throw new Error(`unknown node ${id}`);
     return n;
+  }
+
+  /** Attach what a worker learned about a node (title, artifacts dir, overlay scope, bounds). */
+  annotate(id, patch) {
+    const n = this.node(id);
+    n.info = { ...(n.info ?? {}), ...patch };
+    this.#emit("node.info", { id, patch });
+    return n;
+  }
+
+  /** Nodes on one canonical URL, to match a state against ones already seen there. */
+  nodesAt(url) {
+    const c = canonicalUrl(url);
+    return Object.values(this.data.nodes).filter((n) => n.url === c);
   }
 
   setStatus(id, status, detail) {
@@ -197,12 +214,13 @@ export class Graph {
   }
 
   /**
-   * The shell: module archetypes present on every in-scope page (overlays excluded). Unknown
+   * The shell: module archetypes present on every in-scope page (overlays and bounded
+   * placeholders excluded). Unknown
    * until two pages exist, since one page cannot tell its shell from its own modules; it only
    * ever shrinks as pages arrive.
    */
   shell() {
-    const pages = Object.values(this.data.nodes).filter((n) => n.kind === "page" && n.status !== "gap");
+    const pages = Object.values(this.data.nodes).filter((n) => n.kind === "page" && n.status !== "gap" && n.status !== "bounded");
     if (pages.length < 2) return [];
     return [...pages.map((n) => new Set(n.modules)).reduce((a, b) => new Set([...a].filter((x) => b.has(x))))];
   }
