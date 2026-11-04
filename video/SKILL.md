@@ -92,6 +92,8 @@ uv run $V/dedupe_frames.py pii-check                   # must exit 0
   `python3 scripts/recon_prompt.py coverage --write`. Otherwise write
   `$VR/video_coverage.md` yourself: one row per contract id, the frame ids that prove it,
   or `GAP`. Print the gap count. Gaps become a list for the human: what to record next.
+- Screenshots per component: if the project has `scripts/component_shots.py`, run it. It
+  refreshes each component's `SHOTS.md` and `shots/` folder from the canonical frames.
 
 ## 5. Recon from frames
 
