@@ -53,8 +53,9 @@ Do not push to this repo. Send corrections to the owner, who merges them in.
 
 ## Consensus thinking: `/seemly use consensus thinking ...`
 
-For PR conflicts, an error with more than one plausible fix, or any call you should not make
-alone. Three agents answer independently, a judge checks their evidence and picks the
+Runs only when you ask for it. Use it for major calls: a conflict where both PRs change the same
+flow, a big flow-related decision, an error with several fixes that change behaviour. Not for
+small conflicts or simple errors; seemly resolves those normally. Three agents answer independently, a judge checks their evidence and picks the
 best-supported answer, and you get a comparison table, a plan, and a post for the team channel.
 Nothing is changed until you say go.
 

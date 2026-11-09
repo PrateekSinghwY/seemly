@@ -8,9 +8,21 @@ wrong guess outvote one agent that cited the evidence.
 This is consensus thinking: several independent answers to one question, compared before
 acting. Here a judge compares them on evidence, rather than only counting votes.
 
+## Opt-in only for conflicts and errors
+
+PR conflicts, errors and any question outside a clone build go to the panel **only when the
+human asks for consensus thinking**. Without that request, resolve conflicts by the plain
+`decisions.md` › Merge conflicts rule and fix errors normally: never start a panel, never
+produce a comparison table or channel post. Do not suggest a panel for small things; at most,
+when a conflict changes a whole flow, one line may say the human can ask for consensus thinking.
+
+It is meant for major calls: a conflict where both PRs change the same flow, a decision that
+changes how a big feature behaves, an error with several plausible fixes that change behaviour.
+Not for both-sides-added conflicts, renumbering, typos, lint, or one-fix errors.
+
 ## How to invoke
 
-Any of these phrases runs the panel, even outside a clone build:
+Any of these phrases runs the panel:
 
 - `/seemly use consensus thinking to solve the conflicts on <PR link or number>`
 - `/seemly use consensus thinking on this error: <paste>`
@@ -20,21 +32,21 @@ The run follows the matching mode below, then gives the report in section 7.
 
 ## When the panel runs
 
-Convene a panel for any of these. Everything else is decided by the running agent per
-`decisions.md`.
+**Inside a clone build** (seemly running `/seemly <url>` unattended), the build convenes a panel
+on its own for the first five rows below; it records the result in `discovery/` and posts
+nothing. **Everything else** runs only when the human asks.
 
 | Trigger | Examples |
 |---|---|
 | Scope boundary | build or disable a sibling nav item, tab, module; how deep a "build X" goes |
 | Unbounded work | how far to seed, crawl, paginate or capture; anything that could run without end |
 | Server-side logic | a rule the reference decides on the server and the capture only shows the result of |
-| Merge conflict, case (b) or (c) | one side removes what the other relies on; both sides change the same behaviour (`decisions.md` › Merge conflicts) |
 | Contested intake call | a build/disable call the agent is not confident in |
 | Lessons before a continued build | agreeing the rules a build family runs under (`principles.md`) |
-| Error or blocker with more than one plausible fix | a failing migration, a lint or type error whose fix changes behaviour, a CSync failure, a red CI check |
-| Human asks | "use consensus thinking", "run the panel", "ask multiple agents" |
+| Human asks (conflicts, errors, any major call) | "use consensus thinking", "run the panel", "ask multiple agents" |
 
-Case (a) merge conflicts (both sides only add) do not need a panel: keep both and renumber.
+Even when asked, case (a) merge conflicts (both sides only add) are settled directly: keep both
+and renumber.
 
 ## 1. Brief (written once, sent identically)
 
@@ -168,7 +180,8 @@ too, with "direct" in the vote column and the rule that settled them.
 the exact resolution plan (per file: which side is kept, what is merged by hand, what is
 renumbered).
 
-**Channel post**: a short block the human can paste into the team channel as-is:
+**Channel post**: a short block the human may paste into the team channel. Only for a major
+call worth the team's attention; say so when it is not, and leave the post out:
 
 ```
 Consensus check: <PR link | error, one line>

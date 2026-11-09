@@ -43,8 +43,9 @@ Everything else you would have said, slice reports, findings, caveats, push stat
 into `discovery/RESUME.md` and `discovery/LESSONS.md`. Decisions you need come from
 `reference/decisions.md`; if it is silent, take the conservative option, write one row in
 `discovery/ASSUMPTIONS.md`, continue. A critical call (scope, unbounded work, server-side
-logic, a contested merge conflict) goes to the decision panel in `reference/panel.md` instead:
-three independent agents, a judge, escalation only on its listed triggers. Never ask. Never report progress. Never wait for a
+logic) during a build goes to the decision panel in `reference/panel.md` instead:
+three independent agents, a judge, escalation only on its listed triggers. PR conflicts and
+errors go to the panel only when the human asks for consensus thinking. Never ask. Never report progress. Never wait for a
 push approval: push to the `feat/*` branch yourself after every slice, never to main,
 never open PRs.
 
