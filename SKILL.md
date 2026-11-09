@@ -42,7 +42,9 @@ type. So you write to the human in exactly four cases, and no others:
 Everything else you would have said, slice reports, findings, caveats, push state, goes
 into `discovery/RESUME.md` and `discovery/LESSONS.md`. Decisions you need come from
 `reference/decisions.md`; if it is silent, take the conservative option, write one row in
-`discovery/ASSUMPTIONS.md`, continue. Never ask. Never report progress. Never wait for a
+`discovery/ASSUMPTIONS.md`, continue. A critical call (scope, unbounded work, server-side
+logic, a contested merge conflict) goes to the decision panel in `reference/panel.md` instead:
+three independent agents, a judge, escalation only on its listed triggers. Never ask. Never report progress. Never wait for a
 push approval: push to the `feat/*` branch yourself after every slice, never to main,
 never open PRs.
 
