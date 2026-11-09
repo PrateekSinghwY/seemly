@@ -51,6 +51,20 @@ Set up the seemly skill for me:
 
 Do not push to this repo. Send corrections to the owner, who merges them in.
 
+## Consensus thinking: `/seemly use consensus thinking ...`
+
+For PR conflicts, an error with more than one plausible fix, or any call you should not make
+alone. Three agents answer independently, a judge checks their evidence and picks the
+best-supported answer, and you get a comparison table, a plan, and a post for the team channel.
+Nothing is changed until you say go.
+
+```
+/seemly use consensus thinking to solve the conflicts on <PR link>
+/seemly use consensus thinking on this error: <paste the error>
+```
+
+Full procedure: `reference/panel.md`.
+
 ## From videos: `/seemly-video`
 
 When the app cannot be reached (a customer tenant, a paywalled module), recordings are the

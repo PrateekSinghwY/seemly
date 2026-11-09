@@ -1,6 +1,6 @@
 ---
 name: seemly
-description: Clone a live web app (a page, a feature, or the whole app) into an RL environment repo, pixel for pixel and flow for flow. Use for any request like "clone <url>", "recreate <site> as an RL environment", "pixel-perfect copy of <page>", "resume the <site> clone build", "run qa" or a bug sheet to work through, or "distill" after a build. Uses Claude in Chrome for discovery and Playwright + CDP for capture, mirrors backend, database and network from captured payloads, renders zero typed data and zero personal data, verifies every element three ways, and rewrites its own rules from the corrections it receives. Not for ordinary browsing, scraping for analysis, or building a site from a design.
+description: Clone a live web app (a page, a feature, or the whole app) into an RL environment repo, pixel for pixel and flow for flow. Use for any request like "clone <url>", "recreate <site> as an RL environment", "pixel-perfect copy of <page>", "resume the <site> clone build", "run qa" or a bug sheet to work through, "distill" after a build, or "use consensus thinking" to settle PR conflicts, an error or a critical decision with a judged multi-agent panel. Uses Claude in Chrome for discovery and Playwright + CDP for capture, mirrors backend, database and network from captured payloads, renders zero typed data and zero personal data, verifies every element three ways, and rewrites its own rules from the corrections it receives. Not for ordinary browsing, scraping for analysis, or building a site from a design.
 ---
 
 # seemly
