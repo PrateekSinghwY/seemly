@@ -23,6 +23,9 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 KINDS = ("names", "emails", "ids", "hosts")
+# personal values with a shape: emails and wages/amounts ($15.50, 15.50/hr) are blacked out
+# even when no one listed them in pii.json
+PATTERN = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+|\$\s?\d[\d,]*(\.\d{2})?|\d+\.\d{2}/(hr|hour)", re.I)
 
 
 def load_terms(pii_path: Path) -> list[str]:
@@ -57,6 +60,8 @@ def _matches(word: str, terms_lower: set[str], parts: set[str]) -> bool:
         return False
     if w in terms_lower or w in parts:
         return True
+    if PATTERN.search(word):  # any email address or money amount, listed or not
+        return True
     # hosts and emails arrive inside a longer OCR "word" (a whole URL): match as a substring
     return any(("." in t or "@" in t) and t in w for t in terms_lower)
 
@@ -69,7 +74,7 @@ def mask_frame(path: Path, top_frac: float, terms: list[str]) -> int:
         if top_frac > 0:
             draw.rectangle([0, 0, im.width, round(im.height * top_frac)], fill=(40, 40, 40))
         filled = 0
-        if terms and shutil.which("tesseract"):
+        if shutil.which("tesseract"):
             lower = {t.lower() for t in terms}
             # multi-word terms ("Alex Doe") are matched word by word
             parts = {p.lower() for t in terms for p in t.split() if len(p) > 2}
@@ -85,7 +90,7 @@ def mask_frame(path: Path, top_frac: float, terms: list[str]) -> int:
 def mask_video(
     curated_slug_dir: Path, entries: list[dict], top_frac: float, terms: list[str]
 ) -> dict:
-    stamp = f"{top_frac}:{len(terms)}"
+    stamp = f"{top_frac}:{len(terms)}:p1"  # p1: email and money patterns
     masked = boxes = 0
     for e in entries:
         f = curated_slug_dir / e["file"]

@@ -127,6 +127,13 @@ A failed channel is a defect: fix the clone, never the plan. Re-run coverage so 
 report shows built and verified per id. Done means every built state passes text, layout
 and structure, and the report states `n of N verified`, counted, never estimated.
 
+## Merge conflicts
+
+Resolving a conflict follows seemly's `reference/decisions.md` row "Merge conflicts": read both
+sides, classify each hunk as both-add (keep both, renumber the unmerged id), remove-vs-rely (keep the
+flow already on main unless the new one is ruled), or change-vs-change (the side with the stronger
+source wins: frame > vendor API definition > job aid). Never rebuild a flow another open PR builds.
+
 ## Stops allowed
 
 `VIDEO INTAKE` (once), `BLOCKED` (a tool setup.sh cannot install, or a video that will

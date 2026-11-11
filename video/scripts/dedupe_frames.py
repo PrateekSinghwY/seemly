@@ -473,6 +473,7 @@ def dedupe_video(slug: str, p: Params, manifest: dict) -> dict:
         "privacy": privacy,
         "source_rank": vmeta.get("source_rank"),
         "mask_top": vmeta.get("mask_top"),
+        "yt_id": vmeta.get("yt_id"),  # kept across re-runs, or tags lose [yt:<id>]
         "keep_reasons": reasons_hist,
         "params": p.__dict__,
     }
@@ -655,7 +656,7 @@ def cmd_meta(args) -> None:
     if args.yt_id:
         v["yt_id"] = args.yt_id  # evidence tags become [yt:<id>@mm:ss]
     save_manifest(manifest)
-    print(f"{args.video}: source_rank={v.get('source_rank')} mask_top={v.get('mask_top')}")
+    print(f"{args.video}: source_rank={v.get('source_rank')} mask_top={v.get('mask_top')} yt_id={v.get('yt_id')}")
     if args.mask_top is not None and (CURATED_DIR / args.video).exists():
         frames = [f for f in manifest["frames"] if f["video"] == args.video]
         r = video_privacy.mask_video(
