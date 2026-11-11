@@ -84,6 +84,8 @@ for v in "${videos[@]}"; do
     echo "skip  $slug (already extracted; --force to redo)"
     continue
   fi
+  # Raw frames run ~30x the video's size: refuse up front instead of filling the disk midway.
+  python3 "$HERE/video_storage.py" preflight "$v_abs" || exit 1
   rm -rf "$out"
   mkdir -p "$out"
   echo "extract $slug"

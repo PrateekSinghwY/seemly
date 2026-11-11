@@ -68,6 +68,7 @@ import video_paths
 import video_privacy
 import video_speech
 import video_states
+import video_storage
 
 ROOT = video_paths.project()
 VIDEO_ROOT = video_paths.video_root(
@@ -418,7 +419,7 @@ def dedupe_video(slug: str, p: Params, manifest: dict) -> dict:
         src = raw / entry["raw_file"]
         dst = out_dir / entry["file"]
         if not dst.exists():
-            shutil.copy2(src, dst)
+            video_storage.clone_file(src, dst)  # copy-on-write: no new blocks until masked
 
     wanted = {e["file"] for e in new_entries.values()}
     for f in out_dir.glob("*.png"):
@@ -498,10 +499,30 @@ def extracted_slugs(requested: list[str]) -> list[str]:
     return sorted(d.name for d in RAW_DIR.iterdir() if (d / "frames.csv").exists())
 
 
+def remask_pruned(slug: str, manifest: dict) -> None:
+    """Raw frames were pruned after curation: the selection is final, so a re-run only
+    re-applies the mask (new pii.json terms) to the curated frames."""
+    entries = [e for e in manifest["frames"] if e["video"] == slug]
+    vmeta = manifest["videos"].get(slug, {})
+    privacy = video_privacy.mask_video(
+        CURATED_DIR / slug,
+        entries,
+        float(vmeta.get("mask_top") or 0),
+        video_privacy.load_terms(PII_PATH),
+    )
+    print(f"{slug}: raw pruned, selection kept; re-masked {privacy['frames_masked']} curated frames "
+          f"(re-select: extract_frames.sh --force <video>)")
+
+
 def cmd_dedupe(args, p: Params) -> None:
     manifest = load_manifest()
     rows = []
     for slug in extracted_slugs(args.videos):
+        meta_path = RAW_DIR / slug / "video_meta.json"
+        if meta_path.exists() and json.loads(meta_path.read_text()).get("raw_pruned"):
+            remask_pruned(slug, manifest)
+            save_manifest(manifest)
+            continue
         s = dedupe_video(slug, p, manifest)
         video_speech.frame_speech(
             RAW_DIR / slug, [f for f in manifest["frames"] if f["video"] == slug]
@@ -547,7 +568,9 @@ def cmd_rescue(args) -> None:
             entry[f] = label_default(f)
         entry["file"] = curated_name(entry)
         (CURATED_DIR / slug).mkdir(parents=True, exist_ok=True)
-        shutil.copy2(RAW_DIR / slug / fr.file, CURATED_DIR / slug / entry["file"])
+        if not (RAW_DIR / slug / fr.file).exists():  # raw was pruned: rebuild this window
+            video_storage.restore_raw(slug, lo, hi, args.include_scene)
+        video_storage.clone_file(RAW_DIR / slug / fr.file, CURATED_DIR / slug / entry["file"])
         manifest["frames"].append(entry)
         added += 1
     if slug in manifest["videos"]:

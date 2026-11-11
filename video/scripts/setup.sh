@@ -45,8 +45,15 @@ echo "verify (frame_diff needs Playwright in the project)"
 if (cd "$PROJ" && node -e "require.resolve('playwright')" >/dev/null 2>&1); then ok "playwright"
 else bad "playwright missing: cd $PROJ && pnpm add -D playwright && pnpm exec playwright install chromium"; fi
 
+echo "storage (leaked test DBs and scratch copies are swept; test code must not leak)"
+(cd "$PROJ" && python3 "$HERE/video_storage.py" clean | tail -1 | sed 's/^/  ok    storage /')
+if (cd "$PROJ" && python3 "$HERE/video_storage.py" check-tests >/tmp/seemly-check-tests.$$ 2>&1); then ok "test code clones and cleans its DB copies"
+else bad "test code leaks DB copies, fix each line (SKILL.md, Storage):"; sed 's/^/          /' /tmp/seemly-check-tests.$$; fi
+rm -f /tmp/seemly-check-tests.$$
+
 if [ "${1:-}" = "--selftest" ]; then
   echo "selftest"
   (cd "$PROJ" && uv run --quiet "$HERE/dedupe_frames.py" selftest) && ok "planted-event selftest" || bad "selftest failed (output above)"
+  python3 "$HERE/video_storage.py" selftest && ok "storage selftest" || bad "storage selftest failed (output above)"
 fi
 [ $fail = 0 ] && echo "setup OK" || { echo "setup INCOMPLETE: fix the FIX lines and re-run"; exit 1; }

@@ -232,8 +232,9 @@ graph, so a crash or a checkpoint loses nothing. How to run it well, learned on 
 - **Stop and recover:** a SIGTERM stops a walk cleanly (the node in hand goes back on the
   frontier). If a walk ever died with its browser, `O requeue --failed` restores its give-ups.
   Nodes reachable only through a write close as `bounded`, not as failures.
-- **The clone side** is walked on an isolated copy (own DB copy, own ports, never the dev DB)
-  with `--allow-post '.*'`, so every write flow runs end to end; `errors.jsonl` then lists each
+- **The clone side** is walked on an isolated copy (own DB copy, own ports, never the dev DB:
+  a copy-on-write clone deleted when the walk ends, per the Storage section of
+  `video/SKILL.md`, which binds every seemly test run) with `--allow-post '.*'`, so every write flow runs end to end; `errors.jsonl` then lists each
   failed API call and script error with the click that caused it.
 - **The gap list:** `O compare --ref <ref dirs> --clone <clone dirs> --out graph-diff.md` matches
   views by path family and controls by normalised label, compares the shell once, and lists per
