@@ -159,7 +159,15 @@ def pattern_boxes(words: list[Word], height: int, width: int) -> list[tuple[int,
                     if b[1] > label_box[3] and b[1] <= label_box[3] + height * 0.5
                     and b[0] < label_box[2] + 4 and b[2] > label_box[0] - 4
                 ]
-                if len(beside) >= 2 and overlap:
+                def under(box: tuple[int, int, int, int]) -> bool:
+                    """A value right under `box`, within a few rows (a grid's next row)."""
+                    return any(
+                        0 < b[1] - box[3] <= max(lh, 8) * 4 and b[0] < box[2] + 4 and b[2] > box[0] - 4
+                        for _, b in flat
+                    )
+
+                # a grid header: other headers beside it, with values right under it and them
+                if len(beside) >= 2 and overlap and under(label_box) and any(under(b) for b in beside):
                     # a grid header (other headers beside it): the values in its column
                     boxes += [b for t, b in overlap if _norm(t).split(" ")[0] not in LABEL_HEADS]
                 elif len(aligned) >= 3 and labels_below * 2 < len(aligned):
@@ -173,6 +181,19 @@ def pattern_boxes(words: list[Word], height: int, width: int) -> list[tuple[int,
                     half = max(lh, 8)
                     reach = int(label_box[2] + width * 0.12)
                     boxes.append((label_box[2] + 4, int(cy - half), reach, int(cy + half)))
+                    # and the value's words, whole: the first starts inside the reach, and the
+                    # run continues while the next word follows within a word gap
+                    row = sorted(
+                        (b for _, b in flat
+                         if b[0] > label_box[2] and abs((b[1] + b[3]) / 2 - cy) <= half),
+                        key=lambda b: b[0],
+                    )
+                    end = reach
+                    for b in row:
+                        if b[0] > end:
+                            break
+                        boxes.append(b)
+                        end = max(end, b[2] + lh * 2)
                 break
         for (t1, b1), (t2, b2) in zip(ws, ws[1:]):
             if NAME_SHAPE.match(t1) and re.match(r"^[A-Z][a-zA-Z'\-]+$", t2):

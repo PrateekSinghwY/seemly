@@ -247,6 +247,29 @@ def unit_checks(tmp: Path) -> bool:
     print(f"pii mask         {'OK' if good else 'FAIL'}  {n} word boxes filled")
     ok &= good
 
+    # By pattern, with an empty list: people nobody listed (a Reports To value, a "Last, First"
+    # row, a badge in a grid under a centred header) are masked; the labels stay readable.
+    form = tmp / "form.png"
+    im = Image.new("RGB", (1600, 520), (255, 255, 255))
+    d = ImageDraw.Draw(im)
+    font = ImageFont.load_default(size=30)
+    d.text((40, 40), "Reports To", fill=BLACK, font=font)
+    d.text((330, 40), "Sam Rivera", fill=BLACK, font=font)
+    d.text((40, 120), "Rivera, Sam", fill=BLACK, font=font)
+    d.text((40, 170), "12346", fill=BLACK, font=font)
+    for x, head in ((300, "Badge Number"), (700, "Start Date"), (1050, "End Date")):
+        d.text((x, 300), head, fill=BLACK, font=font)
+    d.text((260, 380), "10338925", fill=BLACK, font=font)
+    d.text((700, 380), "9/01/2013", fill=BLACK, font=font)
+    im.save(form)
+    video_privacy.mask_frame(form, 0.0, [])
+    seen = " ".join(w for w, _b, _k in video_privacy.ocr_words(form))
+    leaked = [v for v in ("Rivera", "10338925", "12346") if v in seen]
+    kept = [v for v in ("Reports", "Start", "Date") if v in seen]
+    good = not leaked and len(kept) == 3
+    print(f"pattern mask     {'OK' if good else 'FAIL'}  leaked {leaked or 'none'}; labels kept {kept}")
+    ok &= good
+
     pii = tmp / "pii.json"
     pii.write_text(json.dumps({"names": ["seemly"]}))  # a word the skill's tracked files contain
     hit = bool(video_privacy.check(SCRIPTS.parent, pii))
@@ -270,11 +293,27 @@ def main(keep: bool = False, speech: bool = False) -> int:
     make_video(video)
     if speech:
         video = add_speech(video)
+    # A variable-frame-rate copy (frame durations change mid-clip, as in a Teams or screen-share
+    # recording): every scene frame file must match its line in scene_scores.txt.
+    vfr = vroot / "videos" / "selftest-vfr.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-v", "error", "-y", "-i", str(video), "-vf",
+            "setpts='if(lt(N,150),N/30,5+(N-150)/7)/TB'", "-fps_mode", "vfr", "-an", str(vfr),
+        ],
+        check=True,
+    )
     env = {**os.environ, "SEEMLY_VIDEO_ROOT": str(vroot), "SPEECH": "1" if speech else "0"}
     subprocess.run([str(SCRIPTS / "extract_frames.sh")], env=env, check=True)
     subprocess.run(
         ["uv", "run", "--quiet", str(SCRIPTS / "dedupe_frames.py"), "dedupe"], env=env, check=True
     )
+
+    vraw = vroot / "frames_raw" / vfr.stem
+    files = len(list(vraw.glob("s_*.png")))
+    scores = sum(1 for ln in (vraw / "scene_scores.txt").read_text().splitlines() if ln.startswith("frame:"))
+    vfr_ok = files == scores and files >= 5
+    print(f"vfr scene pass   {'OK' if vfr_ok else 'FAIL'}  {files} scene frames for {scores} scene scores")
 
     manifest = json.loads((vroot / "manifest.json").read_text())
     slug = video.stem
@@ -323,7 +362,7 @@ def main(keep: bool = False, speech: bool = False) -> int:
         heard = heard and n_att > 0
         ok &= heard
     print()
-    ok &= unit_checks(tmp)
+    ok &= unit_checks(tmp) and vfr_ok
     print("\nSELFTEST " + ("PASS" if ok else "FAIL") + (f"  (tree kept: {tmp})" if keep else ""))
     if not keep:
         shutil.rmtree(tmp, ignore_errors=True)

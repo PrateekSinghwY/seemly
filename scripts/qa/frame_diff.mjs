@@ -287,7 +287,14 @@ async function recheckMissing(page, shot, text, crop, tmpDir) {
     for (const inv of [false, true]) {
       const p = join(tmpDir, `recheck-${m.label}-${inv ? "i" : "n"}.png`);
       await cropPng(page, shot, box, p, inv);
-      const words = execFileSync("tesseract", [p, "-", "--psm", "7"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+      // the same upscale as ocr(): a small cropped label reads far better at OCR_SCALE
+      const big = upscaled(p, OCR_SCALE);
+      let words;
+      try {
+        words = execFileSync("tesseract", [big ? big.out : p, "-", "--psm", "7"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+      } finally {
+        if (big) rmSync(big.dir, { recursive: true, force: true });
+      }
       if (words.split(/\s+/).some((w) => norm(w) === m.label || (m.label.length >= 5 && editDistanceAtMost1(norm(w), m.label)))) {
         seen = true;
         break;

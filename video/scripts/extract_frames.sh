@@ -102,6 +102,18 @@ for v in "${videos[@]}"; do
       -fps_mode passthrough s_%06d.png 2> scene.log
   )
 
+  # frames.csv maps s_%06d.png to scene_scores.txt by position, so the two must agree one for
+  # one. A mismatch (a dropped frame) would point every later row at the wrong image: stop here.
+  if [ -f "$out/scene_scores.txt" ]; then
+    n_files=$(find "$out" -maxdepth 1 -name 's_*.png' | wc -l | tr -d ' ')
+    n_scores=$(grep -c '^frame:' "$out/scene_scores.txt" || true)
+    if [ "$n_files" != "$n_scores" ]; then
+      echo "BLOCKED $slug: $n_files scene frames for $n_scores scene scores; frames.csv would" \
+        "misalign. Re-run with --force; if it repeats, report the ffmpeg version." >&2
+      exit 1
+    fi
+  fi
+
   {
     echo "file,t,source,scene_score"
     # showinfo: "n:   0 pts:      0 pts_time:0  ..."  -> f_000001.png
