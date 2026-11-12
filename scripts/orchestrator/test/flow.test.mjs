@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { STATE_BOUND, admit, inScope, pathPattern, repeatGroup } from "../bound.mjs";
 import { finish, nextUnit, packet, plan } from "../build.mjs";
 import { Graph } from "../graph.mjs";
-import { classify, isWrite } from "../safety.mjs";
+import { classify, isWrite, readPostByName } from "../safety.mjs";
 import { tree } from "../views.mjs";
 
 test("path families: ids collapse, words stay", () => {
@@ -116,4 +116,16 @@ test("tree: every node once, under its cheapest parent", () => {
   const t = tree(g);
   assert.equal(t.split(edit.id).length - 1, 1);
   assert.match(t, /click "Edit" -> \*\*/);
+});
+
+test("read POSTs by name: opt-in, last segment only, a write word always wins", () => {
+  const post = (url) => ({ method: "POST", url });
+  assert.equal(isWrite(post("https://a.test/api/v1/persons/multi_read")), true, "off by default");
+  assert.equal(isWrite(post("https://a.test/api/v1/persons/multi_read"), [], { readPosts: "auto" }), false);
+  assert.equal(isWrite(post("https://a.test/api/v1/search"), [], { readPosts: "auto" }), false);
+  assert.equal(isWrite(post("https://a.test/api/v1/timecards/approve"), [], { readPosts: "auto" }), true);
+  assert.equal(isWrite(post("https://a.test/api/v1/list_update"), [], { readPosts: "auto" }), true);
+  assert.equal(isWrite(post("https://a.test/api/search/save"), [], { readPosts: "auto" }), true, "only the last segment counts");
+  assert.equal(isWrite({ method: "DELETE", url: "https://a.test/api/v1/search" }, [], { readPosts: "auto" }), true, "POST only");
+  assert.equal(readPostByName("https://a.test/x/apply_read"), true);
 });

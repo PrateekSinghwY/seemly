@@ -145,6 +145,8 @@ Rules the preflight enforces, learned the hard way:
 | Capture to disk: hydrated DOM, every XHR body, every `window.*` global, images, fonts, computed-style manifest, AX tree, full-page oracle under the determinism lock | **Playwright + CDP** | writes files, byte-exact, `DOMSnapshot`, `forcePseudoState`, `getPlatformFontsForNode`, `Input.dispatch*` have no Chrome MCP equivalent |
 | Walk the click graph: fire every element, record what opened, save each node's capture | **the orchestrator** (Playwright, persistent profile, writes aborted) | mechanical, resumable, never skips a control out of boredom |
 | Re-check a behaviour, confirm a redirect, verify a doubt on the live site, everything the walker cannot fire (drag, drawing, typing, uploads) | Claude in Chrome | |
+| Capture a write flow a person performs (approve, submit, sign off, a setting) with every call's request and response body, tied to the click | **`capture/record-session.mjs`** (headed, saved login, the person drives) | the only way to get a real write's shape without the tool firing it |
+| Reference API vs the clone's OpenAPI: endpoints not served, request and response fields that differ | **`qa/api_diff.mjs`** | network mirroring checked from the captures, offline |
 | Pixel diff oracle vs clone | Playwright over CDP, **one Chrome build for both sides** | same renderer or the diff is noise |
 | Anything Chrome MCP returns truncated (strings over ~1 KB, arrays over ~100 items) | Playwright | Chrome MCP cannot write files and truncates; do not chunk a 1 MB DOM through it |
 
@@ -201,6 +203,11 @@ AX and oracle capture of every step behind it runs first: the write may be possi
 ---
 
 ## 4. Phase B: walk the surface graph (the orchestrator walks; you rule)
+
+**Time-boxed reference (a sandbox, a trial, a training tenant):** follow `reference/sandbox.md`.
+It orders this phase so connected time goes only to capture: a pilot to tune the walker
+(`--read-posts auto`, `--pace`, `--relogin-wait`), a read walk per role, people-driven write
+sessions through `capture/record-session.mjs`, then everything else offline.
 
 The app is a directed graph of surfaces and states. `reference/graph.md` is the algorithm and
 `scripts/orchestrator/` runs it: node identity by URL plus structural signature, templates by

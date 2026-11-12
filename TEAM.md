@@ -73,3 +73,21 @@ Corrections themselves are never shared, only the rules.
 - Never commit anything under `never_to_be_pushed/`.
 - If it asks you a question, that is a defect: answer it, and the answer becomes a
   decision row so nobody is asked again.
+
+## Working in a sandbox (time-boxed logged-in reference)
+
+The order is in `reference/sandbox.md`; your part as an owner of a few capabilities:
+
+1. **Before access:** list your checklist ids, which role reaches each, and your write flows
+   with their undo. Hand them to the run owner for `PLAN.md`.
+2. **Log in yourself.** Start Chrome with `--remote-debugging-port=<port>
+   --user-data-dir=<a folder for your role>`, log in by hand, then run `export-login.mjs` (the run
+   owner gives you the line). Never paste a password into Claude. If the walker prints
+   `LOGIN LOST`, log in again and re-run the same `export-login` line: the walk resumes.
+3. **Record your write flows**, one per session:
+   `SEEMLY_STORAGE_STATE=<your auth file> node ~/.claude/skills/seemly/scripts/capture/record-session.mjs --role <role> --name <flow> --start <url>`.
+   Do the flow in the window, close it, read `flow.md`. Record the undo, then the error paths.
+4. **Ask first** before anything destructive or shared (delete, exports, global settings).
+5. **After access:** build from the captures (`graph-diff.md`, `api-diff.md`), never from memory.
+
+For how every part of seemly and seemly-video works end to end, read `HOW_IT_WORKS.md`.

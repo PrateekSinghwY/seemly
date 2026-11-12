@@ -6,6 +6,10 @@ seed and reset included, with zero typed data and zero personal data. It asks on
 question at the start, then runs unattended, and it learns from every correction you
 give it.
 
+New to it? Read [HOW_IT_WORKS.md](HOW_IT_WORKS.md) (every phase of seemly and seemly-video,
+end to end). Got time-boxed access to a live reference (a sandbox, a trial)? Follow
+[reference/sandbox.md](reference/sandbox.md).
+
 ## Setup (once, 2 minutes)
 
 You need [Claude Code](https://claude.com/claude-code) and git.

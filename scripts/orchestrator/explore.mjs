@@ -61,7 +61,7 @@ export async function dismissOnLoad(p) {
 const KIND_OF_ROLE = { dialog: "modal", alertdialog: "modal", menu: "menu", listbox: "menu", tooltip: "tooltip", tree: "menu" };
 
 export async function explore(g, dir, opts = {}) {
-  const { maxNodes = Infinity, risky = "record", allowPost = [], sample = SAMPLE, onlyPrefix = null, log = (s) => console.error(s) } = opts;
+  const { maxNodes = Infinity, risky = "record", allowPost = [], readPosts = "off", pace = 0, sample = SAMPLE, onlyPrefix = null, log = (s) => console.error(s) } = opts;
   // A worker that owns part of the site: nodes outside its prefixes are set aside, untouched,
   // and put back on the frontier at the end for the worker that owns them.
   const mine = (n) => !onlyPrefix || inScope(n.href ?? n.url, { origin: g.data.meta.origin, prefix: onlyPrefix });
@@ -87,10 +87,13 @@ export async function explore(g, dir, opts = {}) {
   };
   await context.route("**/*", (route) => {
     const req = route.request();
-    if (isWrite({ method: req.method(), url: req.url(), postData: req.postData() }, allowPost)) {
+    if (isWrite({ method: req.method(), url: req.url(), postData: req.postData() }, allowPost, { readPosts })) {
       net.blocked.push({ method: req.method(), url: req.url(), body: (req.postData() ?? "").slice(0, 2000) });
       return route.abort("blockedbyclient");
     }
+    // A non-read method let through as a read: logged, so a person can confirm each one is.
+    if (!["GET", "HEAD", "OPTIONS"].includes(req.method().toUpperCase()))
+      appendFileSync(join(dir, "allowed-posts.jsonl"), JSON.stringify({ method: req.method(), url: req.url(), node: current.node, element: current.element }) + "\n");
     return route.fallback();
   });
   const page = context.pages()[0] ?? (await context.newPage());
@@ -125,7 +128,9 @@ export async function explore(g, dir, opts = {}) {
     if (!["xhr", "fetch"].includes(req.resourceType()) || !/json/.test(res.headers()["content-type"] ?? "")) return;
     // Capped: a streaming or long-poll response never finishes, and one unbounded wait here
     // stalled a worker on one node for half an hour.
-    const read = res.text().then((body) => ({ method: req.method(), url: res.url(), status: res.status(), body })).catch(() => null);
+    // The request body too: an app that reads through POST carries the filter in it, and the
+    // clone's API has to accept the same shape.
+    const read = res.text().then((body) => ({ method: req.method(), url: res.url(), status: res.status(), body, reqBody: req.postData() ?? null })).catch(() => null);
     net.bodies.push(Promise.race([read, new Promise((r) => setTimeout(() => r(null), 8000))]));
   });
 
@@ -284,6 +289,8 @@ export async function explore(g, dir, opts = {}) {
     const mark = { blocked: net.blocked.length, popups: net.popups.length, dialogs: net.dialogs.length, downloads: net.downloads.length, failures: net.failures.length };
     current = { node: n.id, element: `${c.role} "${c.name.slice(0, 60)}"` };
     const expandedBefore = c.expanded;
+    // A shared or rate-limited reference (a sandbox tenant other people use): space the clicks.
+    if (pace) await page.waitForTimeout(pace);
     try {
       await loc.click({ timeout: 4000 });
     } catch (e) {
@@ -378,7 +385,12 @@ export async function explore(g, dir, opts = {}) {
     const requests = bodies.map((b) => {
       const file = `${createHash("sha1").update(`${b.method} ${b.url}`).digest("hex").slice(0, 12)}.json`;
       if (b.body.length <= 2_000_000) writeFileSync(join(art, "xhr", file), b.body);
-      return { method: b.method, url: b.url, status: b.status, bytes: b.body.length, file };
+      let reqFile;
+      if (b.reqBody) {
+        reqFile = file.replace(/\.json$/, ".req.json");
+        writeFileSync(join(art, "xhr", reqFile), b.reqBody.slice(0, 2_000_000));
+      }
+      return { method: b.method, url: b.url, status: b.status, bytes: b.body.length, file, reqFile };
     });
     g.annotate(n.id, { title: r.title, heading: r.heading, interactive: r.candidates.length, artifacts: rel, scope: scopeCss, overflowX: r.overflowX });
 

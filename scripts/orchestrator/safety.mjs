@@ -45,12 +45,37 @@ export function classify({ name = "", href = "" }) {
 const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
 /**
- * Is this request a write the explorer must abort? GraphQL queries and anything matching the
- * build's `allowPost` patterns (search endpoints that POST a filter) are reads.
+ * A POST whose last path segment names a read (`multi_read`, `search`, `query`, `list`, ...).
+ * Enterprise apps load most screens through such POSTs (a filter body too big for a query
+ * string); aborting them walks a blank app. Opt-in (`--read-posts auto`), because a name is a
+ * claim, not a proof: every request let through this way is logged to allowed-posts.jsonl
+ * for a person to read, and a segment that also names a write is never let through.
  */
-export function isWrite({ method, url, postData = "" }, allowPost = []) {
+export const READ_POST = /(^|[_-])(multi_?read|read|reads|search|query|find|lookup|list|retrieve|fetch|get|count|preview|calculate_?totals?)([_-]|$)/i;
+const WRITE_SEGMENT = /(^|[_-])(create|update|delete|remove|save|submit|apply|approve|refuse|sign_?off|post|commit|import|upload|execute|run|send|cancel)([_-]|$)/i;
+
+export function readPostByName(url) {
+  let seg;
+  try {
+    seg = new URL(url).pathname.split("/").filter(Boolean).pop() ?? "";
+  } catch {
+    return false;
+  }
+  // A segment that ENDS in read (`apply_read`, `multi_read`) names its result, so it is a read
+  // even when an earlier word sounds like a write.
+  if (/(^|[_-])(multi_?)?reads?$/i.test(seg)) return true;
+  return READ_POST.test(seg) && !WRITE_SEGMENT.test(seg);
+}
+
+/**
+ * Is this request a write the explorer must abort? GraphQL queries, anything matching the
+ * build's `allowPost` patterns (search endpoints that POST a filter) and, with
+ * `readPosts: "auto"`, a POST whose last path segment names a read, are reads.
+ */
+export function isWrite({ method, url, postData = "" }, allowPost = [], { readPosts = "off" } = {}) {
   if (READ_METHODS.has(method.toUpperCase())) return false;
   if (allowPost.some((re) => re.test(url))) return false;
+  if (readPosts === "auto" && method.toUpperCase() === "POST" && readPostByName(url)) return false;
   const body = (postData ?? "").trimStart();
   if (/^\{?\s*"?query"?\s*:?\s*"?\s*(query\b|\{)/.test(body) && !/\bmutation\b/.test(body)) return false;
   return true;

@@ -4,7 +4,8 @@
 //
 //   explore phase
 //     init --target <url> [--prefix /path]... [--entry <url>]...  create the graph from entry pages
-//     explore [--max-nodes N] [--risky record|probe] [--allow-post <regex>]... [--sample K] [--only-prefix /area]...
+//     explore [--max-nodes N] [--risky record|probe] [--allow-post <regex>]... [--read-posts off|auto]
+//             [--pace <ms>] [--relogin-wait <minutes>] [--sample K] [--only-prefix /area]...
 //     visit <url>                                                  add one more entry page
 //     requeue <nodeId> | requeue --failed | gap <nodeId> --reason "..."   corrections; --failed restores give-ups
 //     pending                                                      writes waiting for BLOCKED
@@ -18,7 +19,7 @@
 //     compare --ref <dir>... --clone <dir>... [--out diff.md]       reference walk vs clone walk
 //   (any) --dir <discovery dir>   --cdp <http://127.0.0.1:9222>   --headed
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -45,6 +46,9 @@ const { values: o, positionals } = parseArgs({
     "max-nodes": { type: "string" },
     risky: { type: "string", default: "record" },
     "allow-post": { type: "string", multiple: true, default: [] },
+    "read-posts": { type: "string", default: "off" },
+    pace: { type: "string" },
+    "relogin-wait": { type: "string" },
     sample: { type: "string" },
     cdp: { type: "string" },
     headed: { type: "boolean", default: false },
@@ -112,24 +116,49 @@ switch (cmd) {
   }
   case "explore": {
     if (!g.data.meta.origin) throw new Error("run init first");
-    try {
-      const r = await explore(g, dir, {
-        ...browser,
-        maxNodes: o["max-nodes"] ? +o["max-nodes"] : Infinity,
-        risky: o.risky,
-        allowPost: o["allow-post"].map((s) => new RegExp(s)),
-        sample: o.sample ? +o.sample : undefined,
-        onlyPrefix: o["only-prefix"]?.length ? o["only-prefix"] : null,
-      });
-      writeTree(g, dir);
-      writeLive(g, dir);
-      say(`expanded ${r.expanded} node(s); graph ${r.closed ? "CLOSED" : "still open"}${r.ownOpen !== undefined ? `; ${r.ownOpen} open in this worker's area` : ""}`);
-      status(g);
-    } catch (e) {
-      if (!(e instanceof SessionLost)) throw e;
-      writeTree(g, dir);
-      say(`BLOCKED: ${e.message}. Log in again in the headed profile, then re-run explore.`);
-      process.exitCode = 3;
+    if (!["off", "auto"].includes(o["read-posts"])) throw new Error("--read-posts is off or auto");
+    // --relogin-wait <minutes>: a lost login does not end the run. It prints what to do, waits
+    // for the saved-login file (SEEMLY_STORAGE_STATE) to be rewritten by export-login, and goes
+    // on, so a time-boxed reference (a sandbox) loses minutes to a timeout, not the walk.
+    const waitMin = o["relogin-wait"] ? +o["relogin-wait"] : 0;
+    const stateFile = process.env.SEEMLY_STORAGE_STATE;
+    let maxNodes = o["max-nodes"] ? +o["max-nodes"] : Infinity;
+    for (;;) {
+      try {
+        const r = await explore(g, dir, {
+          ...browser,
+          maxNodes,
+          risky: o.risky,
+          allowPost: o["allow-post"].map((s) => new RegExp(s)),
+          readPosts: o["read-posts"],
+          pace: o.pace ? +o.pace : 0,
+          sample: o.sample ? +o.sample : undefined,
+          onlyPrefix: o["only-prefix"]?.length ? o["only-prefix"] : null,
+        });
+        writeTree(g, dir);
+        writeLive(g, dir);
+        say(`expanded ${r.expanded} node(s); graph ${r.closed ? "CLOSED" : "still open"}${r.ownOpen !== undefined ? `; ${r.ownOpen} open in this worker's area` : ""}`);
+        status(g);
+        break;
+      } catch (e) {
+        if (!(e instanceof SessionLost)) throw e;
+        writeTree(g, dir);
+        if (!waitMin || !stateFile || !existsSync(stateFile)) {
+          say(`BLOCKED: ${e.message}. Log in again in the headed profile, then re-run explore.`);
+          process.exitCode = 3;
+          break;
+        }
+        const before = statSync(stateFile).mtimeMs;
+        say(`LOGIN LOST: ${e.message}. Log in again in the headed window and re-run export-login to ${stateFile}; waiting up to ${waitMin} min.`);
+        const deadline = Date.now() + waitMin * 60_000;
+        while (Date.now() < deadline && statSync(stateFile).mtimeMs === before) await new Promise((r) => setTimeout(r, 5000));
+        if (statSync(stateFile).mtimeMs === before) {
+          say(`BLOCKED: no new login within ${waitMin} min. Re-run explore after logging in.`);
+          process.exitCode = 3;
+          break;
+        }
+        say("login refreshed; resuming the walk");
+      }
     }
     break;
   }

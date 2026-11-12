@@ -172,6 +172,22 @@ copy per test pass, because the copy carried the frame tree). The rules:
 - **Measure, then report.** `video_storage.py audit` prints the video tree's size, every
   prunable video, every leak, and free disk; it exits 1 while anything leaks.
 
+## When a live reference arrives (a sandbox)
+
+Frames were the truth because nothing else was reachable. Once a sandbox is reachable, seemly's
+`reference/sandbox.md` takes over and a live capture outranks a frame. This skill then does two
+jobs only:
+- **What screenshots miss**: record the screen during a write session (`record-session.mjs`
+  runs at the same time) and run this pipeline on that recording for animations, toasts that
+  vanish, drag and other transient states. Its `states.json` then names states the session's
+  step screenshots did not catch.
+- **Verification after access ends**: `frame_diff.mjs` takes the session's step screenshots
+  as frames (they are already at a known viewport), so every state built from the sandbox is
+  still verified against it later.
+
+Existing labelled frames stay as the history of the look (an older release); where a frame and
+a sandbox capture disagree, the capture wins and the disagreement goes in `conflicts`.
+
 ## Merge conflicts
 
 Resolving a conflict follows seemly's `reference/decisions.md` row "Merge conflicts": read both
