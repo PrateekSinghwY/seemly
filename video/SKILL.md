@@ -69,7 +69,11 @@ uv run $V/dedupe_frames.py dedupe --ocr                # layered dedupe + chrome
 uv run $V/dedupe_frames.py report                      # counts per video and per layer
 ```
 `extract_frames.sh` refuses a video the disk cannot hold (raw frames run about 30x the
-video's size). Read only curated frames from here on: they are masked. If you see a personal value the
+video's size), and stops (`BLOCKED`) if its scene frames and scene scores ever differ in number.
+Masking covers pii.json terms and, unlisted, people by shape: the value beside or under a person
+label (Name, Reports To, Manager, Email, Phone...), the column under such a grid header,
+"Lastname, First" rows and the id under them, bare 6+ digit runs, emails and money; OCR reads a
+2x upscaled, contrast-stretched copy. Read only curated frames from here on: they are masked. If you see a personal value the
 mask missed, add it to `pii.json` and re-run `dedupe --ocr`.
 
 ## 3. Label every curated frame
