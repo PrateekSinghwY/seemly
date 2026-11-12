@@ -1,6 +1,6 @@
 ---
 name: seemly-video
-description: Turn screen recordings of a web app into a built, verified RL clone when the real app cannot be reached. Use for "seemly-video <file or folder>", "build from these videos", "add this recording", or "resume the video build". Extracts every frame at native fps so no flow is missed, transcribes speech, dedupes in layers, masks personal data, labels every screen and state, reports coverage gaps, then hands the build to seemly and verifies each built screen against its frame. Not for watching a single video for a summary (use watch-video).
+description: Turn screen recordings of a web app into a built, verified RL clone when the real app cannot be reached. Use for "seemly-video <file or folder>", "build from these videos", "build components 6 to 10 from these videos", "add this recording", or "resume the video build". Extracts every frame at native fps so no flow is missed, transcribes speech, dedupes in layers, masks personal data, labels every screen and state, reports coverage gaps, then hands the build to seemly and verifies each built screen against its frame. Not for watching a single video for a summary (use watch-video).
 ---
 
 # seemly-video
@@ -139,6 +139,34 @@ RL_REPO=$PWD node ~/.claude/skills/seemly/scripts/qa/frame_diff.mjs --plan never
 A failed channel is a defect: fix the clone, never the plan. Re-run coverage so the
 report shows built and verified per id. Done means every built state passes text, layout
 and structure, and the report states `n of N verified`, counted, never estimated.
+
+## Focus mode: build only some components
+
+When the human names components ("components 6 to 10", "only 3"), build only those.
+Recordings follow the trainer, not the scope: a component can appear anywhere, in any video,
+several times, or only in passing. So scan everything, then narrow.
+
+1. Resolve the range to component ids and names from the project's numbered scope list (a
+   `components/<id>/` tree under `docs/research/`, a scope or checklist file, or AGENTS.md).
+   Put your reading in the intake `scope` line; if it is ambiguous, say so there, never guess.
+2. Fingerprint each target from its own docs: menu path, screen and page titles, tab, column,
+   field and button labels, and terms a trainer would say aloud. Drop words every screen has
+   (Save, Cancel, Home, the product name). Write `never_to_be_pushed/discovery/focus/fingerprints.json`.
+3. Run section 2 and the `transcribe` step on every video in full. Never skip part of a
+   timeline before scanning it.
+4. Locate: score each curated frame by fingerprint hits in its `ocr.tsv` text and in the
+   speech within 10 s of it. Hits form windows; merge windows under 20 s apart; pad each by
+   5 s. Write `discovery/focus/windows.md`: component, video, `mm:ss-mm:ss`, words matched.
+5. What text misses: view the curated frames outside the windows as contact sheets of 12
+   thumbnails; a sheet showing a target's screen adds a window.
+6. Confirm each window by opening its first, middle and last frame. Drop mention-only windows
+   (a hovered menu item, a slide naming the component) and record why in `windows.md`.
+7. Label every curated frame inside kept windows (section 3) and rescue flow gaps inside them
+   (section 4). Frames outside stay unlabelled: they are another component's evidence.
+8. Coverage, recon, build and verify for the targets only. Never change another component's
+   files; a shared part is reused, and a change it needs is listed in `DONE`, not made.
+9. `DONE` adds, per component: windows used, frames labelled, states, built, verified
+   `n of N`, and each gap with the recording that would close it.
 
 ## Storage
 
