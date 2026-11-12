@@ -45,18 +45,45 @@ const MIN_CONF = 60;
 
 // ---------------------------------------------------------------- OCR
 
-/** Words with boxes, via tesseract TSV at psm 11, the same call the video mode uses. */
-export function ocr(png) {
-  const tsv = execFileSync("tesseract", [png, "-", "--psm", "11", "tsv"], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-  });
+// Small or light-on-dark UI text fails OCR at native size (a frame shown at 1.7x scored 0 of
+// 13); both the frame and the clone are read from copies upscaled OCR_SCALE times, the same
+// factor video_privacy.py uses.
+export const OCR_SCALE = 2;
+
+/** A copy of `png` upscaled `scale` times (ffmpeg, lanczos), in a temp dir; null if it fails. */
+function upscaled(png, scale) {
+  if (scale <= 1) return null;
+  const dir = mkdtempSync(join(tmpdir(), "ocr-"));
+  const out = join(dir, "big.png");
+  try {
+    execFileSync("ffmpeg", ["-v", "error", "-y", "-i", png, "-vf", `scale=iw*${scale}:ih*${scale}:flags=lanczos`, out], { stdio: "ignore" });
+    return { out, dir };
+  } catch {
+    rmSync(dir, { recursive: true, force: true });
+    return null;
+  }
+}
+
+/** Words with boxes in the image's own pixels, via tesseract TSV at psm 11 on an upscaled
+ * copy, the same call the video mode uses. */
+export function ocr(png, scale = OCR_SCALE) {
+  const big = upscaled(png, scale);
+  const k = big ? scale : 1;
+  let tsv;
+  try {
+    tsv = execFileSync("tesseract", [big ? big.out : png, "-", "--psm", "11", "tsv"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  } finally {
+    if (big) rmSync(big.dir, { recursive: true, force: true });
+  }
   const words = [];
   for (const line of tsv.split("\n").slice(1)) {
     const c = line.split("\t");
     if (c.length !== 12 || !c[11].trim()) continue;
     const conf = Number(c[10]);
-    const [x, y, w, h] = c.slice(6, 10).map(Number);
+    const [x, y, w, h] = c.slice(6, 10).map((v) => Number(v) / k);
     words.push({ text: c[11].trim(), conf, x, y, w, h });
   }
   return words;

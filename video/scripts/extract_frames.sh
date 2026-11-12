@@ -95,9 +95,11 @@ for v in "${videos[@]}"; do
     cd "$out"
     ffmpeg -hide_banner -nostdin -loglevel info -i "$v_abs" \
       -vf "fps=${FPS},showinfo" f_%06d.png 2> sample.log
+    # passthrough, as everywhere else: with vfr, ffmpeg drops frames on variable-frame-rate
+    # recordings (Teams, screen shares), so s_%06d.png stops matching scene_scores.txt's frame:N.
     ffmpeg -hide_banner -nostdin -loglevel info -i "$v_abs" \
       -vf "select='gt(scene,${SCENE_MIN})',metadata=print:key=lavfi.scene_score:file=scene_scores.txt,showinfo" \
-      -fps_mode vfr s_%06d.png 2> scene.log
+      -fps_mode passthrough s_%06d.png 2> scene.log
   )
 
   {

@@ -737,12 +737,7 @@ def run_ocr(slugs: list[str], manifest: dict) -> None:
         for e in manifest["frames"]:
             if e["video"] != slug:
                 continue
-            txt = subprocess.run(
-                ["tesseract", str(CURATED_DIR / slug / e["file"]), "-", "--psm", "11"],
-                check=False,
-                capture_output=True,
-                text=True,
-            ).stdout
+            txt = video_privacy.ocr_text(CURATED_DIR / slug / e["file"])
             lines.append(f"{e['id']}\t{e['timestamp']}\t{' '.join(txt.split())}")
         (RAW_DIR / slug / "ocr.tsv").write_text("\n".join(lines) + "\n")
         print(f"ocr {slug}: {len(lines)} frames -> frames_raw/{slug}/ocr.tsv")
