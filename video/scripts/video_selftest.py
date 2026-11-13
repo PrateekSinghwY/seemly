@@ -173,6 +173,7 @@ def close(c1, c2, tol: int = 60) -> bool:
 
 def unit_checks(tmp: Path) -> bool:
     """State layer (V4 c-d, V10), masking and pii-check (V6) on known inputs."""
+    import imagehash
     import video_privacy
     import video_states
 
@@ -269,6 +270,35 @@ def unit_checks(tmp: Path) -> bool:
     good = not leaked and len(kept) == 3
     print(f"pattern mask     {'OK' if good else 'FAIL'}  leaked {leaked or 'none'}; labels kept {kept}")
     ok &= good
+
+    # Seen layer: an identical frame inherits a labelled frame's labels, a changed one does
+    # not, and an empty cache reuses nothing (the pHash pre-filter must not change any of it).
+    seen_dir = tmp / "seen" / "v"
+    seen_dir.mkdir(parents=True)
+    base = Image.new("RGB", (640, 360), (240, 240, 240))
+    ImageDraw.Draw(base).rectangle([40, 40, 400, 200], fill=(20, 90, 160))
+    other = base.copy()
+    ImageDraw.Draw(other).rectangle([300, 220, 620, 340], fill=(200, 30, 30))
+    for name, img in (("a.png", base), ("b.png", base), ("c.png", other)):
+        img.save(seen_dir / name)
+    entries = [
+        {"id": f"v@{n}", "video": "v", "file": f, "phash": str(imagehash.phash(Image.open(seen_dir / f)))}
+        for n, f in enumerate(("a.png", "b.png", "c.png"))
+    ]
+    entries[0].update(screen="Timecard", module="S02", screen_slug="timecard")
+    cache = tmp / "seen.json"
+    empty = video_states.seen_pass([dict(e, screen=None) for e in entries], cache, tmp / "seen")
+    cache.unlink(missing_ok=True)
+    reused = video_states.seen_pass(entries, cache, tmp / "seen")
+    seen_ok = (
+        empty == 0
+        and reused == 1
+        and entries[1].get("labels_from") == "v@0"
+        and entries[1].get("screen") == "Timecard"
+        and not entries[2].get("labels_from")
+    )
+    print(f"seen layer       {'OK' if seen_ok else 'FAIL'}  reused {reused}; empty cache reused {empty}")
+    ok &= seen_ok
 
     pii = tmp / "pii.json"
     pii.write_text(json.dumps({"names": ["seemly"]}))  # a word the skill's tracked files contain

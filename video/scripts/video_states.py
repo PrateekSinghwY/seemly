@@ -41,16 +41,13 @@ COPY_FIELDS = (
 )
 
 
-def _thumb(path: Path) -> np.ndarray:
-    with Image.open(path) as im:
-        return np.asarray(im.convert("L").resize((128, 72), Image.BILINEAR), dtype=np.int16)
-
-
 def _sig(path: Path) -> dict:
     with Image.open(path) as im:
+        im.load()
+        thumb = np.asarray(im.convert("L").resize((128, 72), Image.BILINEAR), dtype=np.uint8)
         return {
             "dhash": str(imagehash.dhash(im, hash_size=16)),
-            "thumb": base64.b64encode(_thumb(path).astype(np.uint8).tobytes()).decode(),
+            "thumb": base64.b64encode(thumb.tobytes()).decode(),
         }
 
 
@@ -83,14 +80,32 @@ def seen_pass(frames: list[dict], cache_path: Path, curated_dir: Path | None = N
             sg = sig_for(f)
             if sg:
                 cache[f["id"]] = {**sg, **{k: f.get(k) for k in COPY_FIELDS}}
+    # same_frame() rejects anything over 1 pHash bit first, so filter the whole cache on that
+    # with one array op, and decode a frame only when some cached frame is that close: a
+    # 2,239-frame video against a 20 MB cache was a single-core quarter of an hour otherwise.
+    ids = list(cache)
+    bits = (
+        np.array([imagehash.hex_to_hash(cache[i]["phash"]).hash.flatten() for i in ids], dtype=bool)
+        if ids
+        else np.zeros((0, 64), dtype=bool)
+    )
     reused = 0
     for f in frames:
         if f.get("screen") or not f.get("phash"):
             continue
+        own = imagehash.hex_to_hash(f["phash"]).hash.flatten()
+        near = (
+            np.nonzero((bits != own).sum(axis=1) <= 1)[0]
+            if bits.shape[1] == own.size
+            else range(len(ids))
+        )
+        if len(near) == 0:
+            continue
         sg = sig_for(f)
         if not sg:
             continue
-        for cid, c in cache.items():
+        for cid in (ids[i] for i in near):
+            c = cache[cid]
             if cid != f["id"] and same_frame(sg, c):
                 for k in COPY_FIELDS:
                     f[k] = c.get(k)
