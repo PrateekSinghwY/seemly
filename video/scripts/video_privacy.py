@@ -18,9 +18,12 @@ appears in a tracked or not-ignored file, printing the file and line, never the 
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
+from concurrent.futures import ProcessPoolExecutor
+from itertools import repeat
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter, ImageOps
@@ -46,6 +49,16 @@ def load_terms(pii_path: Path) -> list[str]:
 OCR_SCALE = 2
 
 
+def ocr_workers() -> int:
+    """Processes for a frame-by-frame OCR pass: every core but one. Tesseract is pinned to one
+    thread each (OMP_THREAD_LIMIT), so the pool, not tesseract, fills the machine: one process
+    on a 2x copy of a 3024-wide frame ran 18 frames a minute, too slow for a 47-minute video."""
+    return max(1, (os.cpu_count() or 2) - 1)
+
+
+_ONE_THREAD = {**os.environ, "OMP_THREAD_LIMIT": "1"}
+
+
 Word = tuple[str, tuple[int, int, int, int], tuple[int, int, int]]  # text, box, (block, par, line)
 
 
@@ -68,6 +81,7 @@ def ocr_words(img: Path, scale: int = OCR_SCALE) -> list[Word]:
             check=False,
             capture_output=True,
             text=True,
+            env=_ONE_THREAD,
         ).stdout
     finally:
         if tmp is not None:
@@ -247,15 +261,19 @@ def mask_video(
     curated_slug_dir: Path, entries: list[dict], top_frac: float, terms: list[str]
 ) -> dict:
     stamp = f"{top_frac}:{len(terms)}:p2"  # p2: + person labels, name shapes, 2x OCR
-    masked = boxes = 0
-    for e in entries:
-        f = curated_slug_dir / e["file"]
-        if not f.exists() or e.get("masked") == stamp:
-            continue
-        boxes += mask_frame(f, top_frac, terms)
+    todo = [
+        e
+        for e in entries
+        if (curated_slug_dir / e["file"]).exists() and e.get("masked") != stamp
+    ]
+    paths = [curated_slug_dir / e["file"] for e in todo]
+    with ProcessPoolExecutor(max_workers=ocr_workers()) as pool:
+        counts = list(
+            pool.map(mask_frame, paths, repeat(top_frac), repeat(terms), chunksize=4)
+        )
+    for e in todo:
         e["masked"] = stamp
-        masked += 1
-    return {"frames_masked": masked, "pii_boxes": boxes}
+    return {"frames_masked": len(todo), "pii_boxes": sum(counts)}
 
 
 def check(root: Path, pii_path: Path) -> list[str]:

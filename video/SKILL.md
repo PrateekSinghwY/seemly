@@ -73,7 +73,7 @@ video's size), and stops (`BLOCKED`) if its scene frames and scene scores ever d
 Masking covers pii.json terms and, unlisted, people by shape: the value beside or under a person
 label (Name, Reports To, Manager, Email, Phone...), the column under such a grid header,
 "Lastname, First" rows and the id under them, bare 6+ digit runs, emails and money; OCR reads a
-2x upscaled, contrast-stretched copy. Read only curated frames from here on: they are masked. If you see a personal value the
+2x upscaled, contrast-stretched copy, on every core but one (tesseract pinned to one thread each). Read only curated frames from here on: they are masked. If you see a personal value the
 mask missed, add it to `pii.json` and re-run `dedupe --ocr`.
 
 ## 3. Label every curated frame

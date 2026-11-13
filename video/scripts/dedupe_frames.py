@@ -53,6 +53,7 @@ import re
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -733,12 +734,15 @@ def run_ocr(slugs: list[str], manifest: dict) -> None:
         print("tesseract not found; skipping OCR (brew install tesseract)")
         return
     for slug in slugs:
-        lines = []
-        for e in manifest["frames"]:
-            if e["video"] != slug:
-                continue
-            txt = video_privacy.ocr_text(CURATED_DIR / slug / e["file"])
-            lines.append(f"{e['id']}\t{e['timestamp']}\t{' '.join(txt.split())}")
+        rows = [e for e in manifest["frames"] if e["video"] == slug]
+        with ProcessPoolExecutor(max_workers=video_privacy.ocr_workers()) as pool:
+            texts = pool.map(
+                video_privacy.ocr_text, [CURATED_DIR / slug / e["file"] for e in rows], chunksize=4
+            )
+            lines = [
+                f"{e['id']}\t{e['timestamp']}\t{' '.join(txt.split())}"
+                for e, txt in zip(rows, texts)
+            ]
         (RAW_DIR / slug / "ocr.tsv").write_text("\n".join(lines) + "\n")
         print(f"ocr {slug}: {len(lines)} frames -> frames_raw/{slug}/ocr.tsv")
 
