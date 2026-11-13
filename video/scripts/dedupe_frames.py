@@ -54,6 +54,7 @@ import shutil
 import subprocess
 import sys
 from concurrent.futures import ProcessPoolExecutor
+from itertools import repeat
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -206,12 +207,32 @@ def read_frames(slug: str) -> list[Frame]:
     return out
 
 
-def load_rgb(path: Path, width: int) -> np.ndarray:
+FEATURE_BATCH = 256  # frames decoded ahead of the comparison; bounds memory
+
+
+def frame_features(path: Path, width: int) -> tuple[np.ndarray, str, int]:
+    """One decode per frame: the perceptual hash of the full frame, the RGB copy at `width`,
+    and the frame's own width. Runs in a worker pool: decoding 21,000 3024-wide PNGs twice
+    each on one core took 40 minutes for one 47-minute video."""
     with Image.open(path) as im:
-        im = im.convert("RGB")
-        if im.width > width:
-            im = im.resize((width, round(im.height * width / im.width)), Image.BILINEAR)
-        return np.asarray(im, dtype=np.uint8)
+        ph = str(imagehash.phash(im))
+        rgb = im.convert("RGB")
+        full = rgb.width
+        if rgb.width > width:
+            rgb = rgb.resize((width, round(rgb.height * width / rgb.width)), Image.BILINEAR)
+        return np.asarray(rgb, dtype=np.uint8), ph, full
+
+
+def _features(raw: Path, frames: list[Frame], width: int):
+    """(frame, rgb, phash, full width) in order, decoded by a pool a batch at a time."""
+    with ProcessPoolExecutor(max_workers=video_privacy.ocr_workers()) as pool:
+        for start in range(0, len(frames), FEATURE_BATCH):
+            batch = frames[start : start + FEATURE_BATCH]
+            paths = [raw / fr.file for fr in batch]
+            for fr, (rgb, ph, full) in zip(
+                batch, pool.map(frame_features, paths, repeat(width), chunksize=4)
+            ):
+                yield fr, rgb, imagehash.hex_to_hash(ph), full
 
 
 def to_gray(rgb: np.ndarray) -> np.ndarray:
@@ -325,19 +346,17 @@ def dedupe_video(slug: str, p: Params, manifest: dict) -> dict:
     dropped_superseded = 0
     scale = 1.0
 
-    settle_dropped = revisit_dropped = 0
-    for fr in frames:
-        if video_events.settle_filter(raw, fr.t, fr.source, p.burst_keep_s):
-            settle_dropped += 1
-            continue
-        path = raw / fr.file
-        rgb = load_rgb(path, p.work_width)
+    revisit_dropped = 0
+    todo = [
+        fr
+        for fr in frames
+        if not video_events.settle_filter(raw, fr.t, fr.source, p.burst_keep_s)
+    ]
+    settle_dropped = len(frames) - len(todo)
+    for fr, rgb, ph, full in _features(raw, todo, p.work_width):
         if not kept:
-            with Image.open(path) as im:
-                scale = rgb.shape[1] / im.width
+            scale = rgb.shape[1] / full
             TICKER = load_ticker(raw, rgb.shape[:2])
-        with Image.open(path) as im:
-            ph = imagehash.phash(im)
         prev = kept[-1] if kept else None
         reasons, info = decide(prev, fr, rgb, ph, p, scale)
         if not reasons:
