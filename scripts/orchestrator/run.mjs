@@ -3,11 +3,15 @@
 // decides what is next, never the builder. Run from the clone repo's root (or set RL_REPO).
 //
 //   explore phase
-//     init --target <url> [--prefix /path]... [--entry <url>]...  create the graph from entry pages
+//     init --target <url> [--prefix /path]... [--entry <url>]... [--entries-from <file>]  create the graph from entry pages
 //     explore [--max-nodes N] [--risky record|probe] [--allow-post <regex>]... [--read-posts off|auto]
 //             [--pace <ms>] [--relogin-wait <minutes>] [--sample K] [--only-prefix /area]...
 //             [--ws-guard block|off] [--retries N] [--backoff-ms N] [--login-pattern <regex>]
 //             [--widths 1024,1280,...|off]                         label widths saved per node for verify
+//             [--keyboards keyboards.json]                         documented shortcuts, fired on every template
+//             [--scope-map scope.json --scope S01,S02 [--expand-out]]  in-scope nodes first; the rest closed shallowly
+//             [--entries-from <file>]                              entry pages: one URL per line, or a JSON list / route map
+//             [--no-interactions]                                  clicks only (no right-click, keys, drags, forms, uploads)
 //     visit <url>                                                  add one more entry page
 //     requeue <nodeId> | requeue --failed | requeue --gaps [--reason <r>] | gap <nodeId> --reason "..."
 //                                                                  corrections; --gaps puts back every gap with a retryable reason
@@ -91,6 +95,11 @@ const { values: o, positionals } = parseArgs({
     "styles-allow": { type: "string" },
     "ws-map": { type: "string" },
     "dead-controls": { type: "boolean", default: false },
+    keyboards: { type: "string" },
+    "scope-map": { type: "string" },
+    "expand-out": { type: "boolean", default: false },
+    "entries-from": { type: "string" },
+    "no-interactions": { type: "boolean", default: false },
   },
 });
 const dir = o.dir;
@@ -157,6 +166,15 @@ function walkerOptions() {
   if (o["backoff-ms"] !== undefined) out.backoffMs = +o["backoff-ms"];
   if (o["login-pattern"] !== undefined) out.loginPattern = o["login-pattern"];
   if (o.widths !== undefined) out.widths = o.widths === "off" ? "off" : o.widths.split(",").map(Number);
+  // keyboards.json of the target repo: every documented shortcut is fired on every template.
+  if (o.keyboards !== undefined) out.keyboards = o.keyboards;
+  if (o["no-interactions"]) out.interactions = false;
+  // A scope-driven walk: in-scope nodes first; out-of-scope ones closed shallowly unless --expand-out.
+  if (o["scope-map"] !== undefined) {
+    if (!o.scope) throw new Error("--scope-map needs --scope <id,...>");
+    out.walkScope = { rules: JSON.parse(readFileSync(o["scope-map"], "utf8")).rules ?? [], ids: o.scope.split(",").map((x) => x.trim()).filter(Boolean), expandOut: o["expand-out"] };
+  }
+  if (o["entries-from"] !== undefined) out.entries = walker.readEntriesFile(readFileSync(o["entries-from"], "utf8"), g.data.meta.origin ?? o.target);
   return out;
 }
 const UNITS = (pr) => ["pending", "building", "built", "verified"].map((k) => `${k} ${pr[k]}`).join(" · ");
@@ -178,7 +196,8 @@ switch (cmd) {
     g.data.meta.target = o.target;
     g.data.meta.origin = t.origin;
     g.data.meta.prefix = o.prefix?.length > 1 ? o.prefix : (o.prefix?.[0] ?? (t.pathname.replace(/\/[^/]*$/, "") || "/"));
-    for (const url of [o.target, ...o.entry]) {
+    const seeded = o["entries-from"] ? walker.readEntriesFile(readFileSync(o["entries-from"], "utf8"), t.origin) : [];
+    for (const url of [o.target, ...o.entry, ...seeded]) {
       const { node, isNew } = await readEntry(g, url, browser);
       say(`${isNew ? "entry" : "known"} ${node.id} ${node.label}`);
     }

@@ -78,6 +78,8 @@ and passed, with its check record on disk:
 - **Human eye:** `human_eye.mjs`, with `--dead-controls` at slice end.
 - **Widths:** `width_sweep.mjs`.
 - **Network:** `api_diff.mjs`, captured reads vs the clone's OpenAPI and responses.
+- **Interactions:** every reference edge of every kind (click, right-click, double-click, key,
+  drag, input, submit, upload) answered the same way on the clone.
 - **Writes:** `write_roundtrip.mjs`.
 
 `O verify` (section 6) runs every one of these per node pair and writes the records.
@@ -310,7 +312,8 @@ tree, every JSON read, `inventory.json` with what each element did), then fires 
 once: links are read in a side tab, buttons are clicked, popup triggers hovered, and what opened
 becomes a node (page, modal, menu, in-place state) with an edge. Rows past STATE_BOUND are
 sampled while they keep leading to the same template; shell controls are expanded on two
-templates, then inherited. Disabled controls, text fields and selects are inventoried, not fired.
+templates, then inherited. Disabled controls are inventoried, not fired; text fields, selects and
+file inputs are fired as forms and uploads (below), not clicked.
 Each node also saves what Phase D compares later: `styles.json` (the computed-style manifest of
 every interactive, heading and landmark element, plus an overlay's box) and `widths.json` (the
 structural labels at the capture width and at each sweep width, 1024 to 2560; `--widths
@@ -340,9 +343,38 @@ What the walker guarantees per node (`explore.mjs`, each with a test in `test/wa
   their answers (by id, else name) and saved under `nodes/<id>/ws/`, listed as `wsReads` in
   `inventory.json`. A sent call that is not a read is dropped in the browser and queued like an
   HTTP write (`--ws-guard off` only records).
+- **Every interaction kind is an edge** (`interactions.mjs`, `test/interactions.test.mjs`), fired
+  on every node after the clicks, each from the verified pre-state:
+  - `contextmenu`: a real right-click on every element with a contextmenu listener (an
+    instrumented `addEventListener`, installed before page scripts) plus grid cells, rows and
+    chips; one per distinct row template, more while they open, STATE_BOUND past that.
+  - `dblclick`: elements with a dblclick listener, plus grid cells.
+  - `key`: every shortcut in the target repo's `keyboards.json` (`--keyboards <path>`; a probe
+    set when there is none and the page listens globally), once per template; Enter or Space on
+    every control with a click edge, once per template (`sameAsClick` says if it matched).
+  - `drag`: draggable elements, sliders, splitters, resize handles, by a fixed offset; a change
+    in box or value is a state node; a drag that writes is aborted like any write.
+  - `input` / `submit`: per form or field group, submit empty, fill every field with a valid
+    synthetic value (type, options, min/max, pattern, placeholder) and submit, and one invalid
+    value per constraint; each validation state is a node. The valid submit is a write:
+    aborted and queued on the reference, sent on a clone walked with `--allow-post`. A search box
+    gets one short query instead.
+  - `upload`: each file input's accept list and size limit from the UI copy; with writes
+    allowed, a tiny accepted fixture file and a rejected one.
+  - **Tab order** per node in `focus.json` (verify's `structure` compares it).
 - **The per-node invariant.** A node closes only when every element the probe found is exactly
-  one row: an edge with its child, a fired result (`inert`, `write-attempt`, a native dialog, a
-  download) or a known unfired reason. Otherwise it stays open (`invariant` gap, retryable).
+  one row per applicable interaction kind (click, contextmenu, dblclick, key, drag, input,
+  submit, upload): an edge with its child, a fired result (`inert`, `write-attempt`, a native
+  dialog, a download) or a known unfired reason. Otherwise it stays open (`invariant` gap,
+  retryable).
+- **Hash routes are nodes.** A fragment that carries a route (`#/list/Kiosk`, `#!/...`) is part
+  of node identity, replayed by URL; a plain fragment joins identity once a fragment-only change
+  rebuilt the page (`meta.hashRoutes`). Old nodes without a fragment load unchanged.
+- **A scope-driven walk.** `O explore --scope-map scope.json --scope S01,S02` walks in-scope
+  nodes first and closes out-of-scope ones shallowly (captured and inventoried, not expanded)
+  unless `--expand-out`; `--entries-from <file>` seeds entry pages (one URL per line, or a JSON
+  list or route map). STATE_BOUND never bounds an entry or an in-scope page; it only samples
+  repeated row siblings.
 
 **Scope, verify, report.** `O scope --map scope.json` tags every node with a component id from
 ordered rules (URL, title, heading, breadcrumb, label, kind, template; first match wins, then
@@ -371,9 +403,8 @@ You keep the judgment the walker cannot make, in Claude in Chrome:
   row this run created, recorded in `DIRTIED.md`. Nothing authorises deleting or changing
   anything the run did not create. A metered write is authorised for the exact price and kind
   shown; anything else re-blocks.
-- what the walker cannot fire: drag, drawing on a map or canvas, typed input and its validation
-  (the QA battery), uploads, keyboard shortcuts, states behind a write. Explore them in Chrome,
-  then `O requeue <node>` or `O gap <node> --reason "..."`;
+- what the walker cannot fire: drawing on a map or canvas, states behind a write, gestures it
+  has no handle for. Explore them in Chrome, then `O requeue <node>` or `O gap <node> --reason "..."`;
 - a node whose skeleton says "sample" (a demo record that fires no data request) stays open
   until a real instance's requests are captured;
 - **negative verdicts are evidenced on every in-scope page**, never from one;
@@ -452,17 +483,20 @@ For every element on every page, before it is done:
    or missing bar item, heading, table header or button at any width.
 
 **`O verify` runs all of it per node pair** (`scripts/orchestrator/verify.mjs`): each reference
-node paired with a clone node, the clone node reached by its replay route, each check a record in
-`<clone>/verify/<node>/<check>.json`:
+node paired with a clone node, the clone node reached by its replay route (any edge kind: a
+right-click, a key, a drag, typed values, a fixture file), each check a record in
+`<clone>/verify/<node>/<check>.json`. The clone must be walked with the same `--keyboards` as
+the reference, so its edges can be compared:
 
 | check | compares | fails on |
 |---|---|---|
 | `pixels` | saved screenshot vs the clone's, same viewport and DPR, `masks.json` applied | any unmasked differing pixel; counted per landmark and region |
-| `structure` | saved AX tree (`aria.yml`) vs the clone's: roles, names, states, order | a missing, invented or reordered entry |
+| `structure` | saved AX tree (`aria.yml`) vs the clone's: roles, names, states, order; the saved Tab order (`focus.json`) vs the clone's | a missing, invented or reordered entry; a focus stop that differs |
 | `style` | `styles.json` vs the clone's manifest, elements matched by role, name and nth: font family, size, weight, line height, colour, background, border, radius, padding, margin, width, height, gap, box shadow | a property beyond its ceiling in `--styles-allow` (default: equal) |
 | `human_eye` | `qa/human_eye_lib.mjs` on the reached node; `--dead-controls` clicks every enabled control from a fresh reach, writes aborted | any finding, any dead enabled control |
 | `widths` | `widths.json` labels vs the clone's at the same widths | an item that differs at some width beyond what differs at the capture width (that is `structure`'s) |
 | `api` | captured HTTP reads vs the clone's requests; websocket reads vs their HTTP mirrors in `--ws-map` (call name -> method + path) | a missing operation or field; `ws call not mirrored` |
+| `interactions` | every reference edge of every kind (click, right-click, double-click, key, drag, input, submit, upload) vs the clone walk's edge of the same kind on the matched element (`compare.mjs` `edgeDiff`) | the clone's edge leads to a node that does not pair with the reference target, or changes nothing where the reference opened something (or the reverse), or a file input accepts other types or sizes; reported per edge ("right-click on 'Shift 7:00 AM-3:30 PM' opens nothing on the clone"). Write rows belong to `writes`; a shortcut `keyboards.json` declares unimplemented is listed, not failed |
 | `writes` | `write_roundtrip.mjs` for the pair's `--writes` rows | a failed round trip; a write with no row is skipped, so not verified |
 
 An overlay or modal node is judged on its own region: pixels on its bounding box, structure,

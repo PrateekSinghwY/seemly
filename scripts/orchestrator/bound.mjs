@@ -2,6 +2,8 @@
 // of URLs has been sampled enough. Pure functions over a plain object kept in graph meta, so a
 // resumed run keeps its counts.
 
+import { routeHash } from "./graph.mjs";
+
 /** Linked values kept per family before the rest are recorded as out of range. */
 export const STATE_BOUND = 30;
 
@@ -42,12 +44,14 @@ export function inScope(raw, { origin, prefix = "/" }) {
  * again (dedupe happens in the graph). Returns `{ ok: true }` or `{ ok: false, bound }` where
  * `bound` says which family hit its limit, for the node's `bound` field.
  */
-export function admit(bounds, raw, limit = STATE_BOUND) {
+export function admit(bounds, raw, limit = STATE_BOUND, { anyHash = false } = {}) {
   bounds.paths ??= {};
   bounds.query ??= {};
   const u = new URL(raw);
-  const pattern = `${u.origin}${pathPattern(u.pathname)}`;
-  const concrete = `${u.origin}${u.pathname}`;
+  // A hash-routed app's screens live in the fragment: `/app#/item/7` is family `/app#/item/:id`.
+  const route = routeHash(raw, { anyHash }).split("?")[0];
+  const pattern = `${u.origin}${pathPattern(u.pathname)}${route ? `#${pathPattern(route.slice(1))}` : ""}`;
+  const concrete = `${u.origin}${u.pathname}${route}`;
   const fam = (bounds.paths[pattern] ??= { kept: [], over: 0 });
   if (!fam.kept.includes(concrete)) {
     if (pattern !== concrete && fam.kept.length >= limit) {

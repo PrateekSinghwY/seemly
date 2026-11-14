@@ -16,6 +16,11 @@
 //   api        the reference node's captured reads vs the clone's requests on that node: every
 //              operation, its query keys, request body fields and response fields; websocket
 //              reads against the clone's HTTP mirrors named in ws-map.json
+//   interactions  every reference edge of every kind (click, right-click, double-click, key,
+//              drag, input, submit, upload) vs the clone walk's edge of the same kind on the
+//              matched element: it must lead to a node that pairs with the reference target, or
+//              both change nothing (compare.mjs edgeDiff); the structure check also compares the
+//              Tab order (focus.json) with the clone's
 //   writes     scripts/qa/write_roundtrip.mjs on the clone, for nodes with write edges or
 //              pending writes, from the rows of a writes spec
 //
@@ -37,7 +42,7 @@ import { REPO, playwright, settle } from "../lib/pw.mjs";
 import { keyPaths, template } from "../qa/api_diff.mjs";
 import { deadControls, inspect, unnamed } from "../qa/human_eye_lib.mjs";
 import { readLabels } from "../qa/labels.mjs";
-import { pairNodes } from "./compare.mjs";
+import { edgeDiff, interactionsReason, pairNodes } from "./compare.mjs";
 import { UNSCOPED } from "./graph.mjs";
 import { open, save } from "./store.mjs";
 import { cropImage, readStylesAllow, shiftRects, styleDiff, styleReason, unionRect, widthsDiff, widthsReason, wsDiff, wsReason } from "./verify-checks.mjs";
@@ -45,7 +50,7 @@ import { cropImage, readStylesAllow, shiftRects, styleDiff, styleReason, unionRe
 const here = dirname(fileURLToPath(import.meta.url));
 const QA = join(here, "..", "qa");
 
-export const CHECKS = ["pixels", "structure", "style", "human_eye", "widths", "api", "writes"];
+export const CHECKS = ["pixels", "structure", "style", "human_eye", "widths", "api", "interactions", "writes"];
 const NA = "not applicable";
 
 // ---------- PNG (no dependency: the repo has no pixelmatch or pngjs) ----------
@@ -439,7 +444,7 @@ export function report(cloneDir, scope) {
   const s = scopePairs(doc, scope);
   const c = verifyCounts(cloneDir, scope);
   const L = [`# Phase D report${scope ? `: ${scope}` : ""}`, "", `${countsLine(c)}. Pairs from ${doc.at}.`, ""];
-  L.push("## Built: reference node -> clone node", "", "| reference node | clone node | pixels | structure | style | human eye | widths | api | writes | verified | reason |", "|---|---|---|---|---|---|---|---|---|---|---|");
+  L.push("## Built: reference node -> clone node", "", "| reference node | clone node | pixels | structure | style | human eye | widths | api | interactions | writes | verified | reason |", "|---|---|---|---|---|---|---|---|---|---|---|---|");
   for (const p of s.pairs) {
     const n = graph.nodes[p.clone.id];
     const v = n?.verify?.ref === p.ref.id ? n.verify : null;
@@ -481,6 +486,7 @@ async function locate(p, el) {
  */
 export async function reachClone(page, g, n, { dismiss } = {}) {
   const { FLOATING_SEL, clearMarks, markFloating, newOverlays, openOnLoad } = await import("./page-probe.mjs");
+  const { replayEdge } = await import("./interactions.mjs");
   const path = g.route(n.id);
   if (path === null) throw new Error("unreachable on the clone graph without a write");
   let from = path.length ? path[0].from : n.id;
@@ -508,10 +514,8 @@ export async function reachClone(page, g, n, { dismiss } = {}) {
     const overlay = last && n.kind !== "page" && n.kind !== "state";
     if (overlay) await page.evaluate(markFloating, FLOATING_SEL);
     if (e.kind !== "redirect") {
-      const l = await locate(page, e.element);
-      if (!l) throw new Error(`replay: "${e.element.name || e.element.css}" not found`);
-      if (e.kind === "hover") await l.hover({ timeout: 4000 });
-      else await l.click({ timeout: 4000 });
+      // any kind: a right-click, a key, a drag, typed values, a fixture file (interactions.mjs)
+      await replayEdge(page, e, locate);
       await settle(page, 2500);
     }
     if (overlay) scopeCss = (await page.evaluate(newOverlays, FLOATING_SEL))[0]?.css ?? null;
@@ -677,6 +681,10 @@ export async function verify({
     ({ dismissOnLoad: dismiss } = await import("./explore.mjs"));
   } catch {}
   const { styleManifest } = await import("./page-probe.mjs");
+  const { focusDiff, focusOrder } = await import("./interactions.mjs");
+  const pairOf = new Map(doc.pairs.map((p) => [p.ref.id, p.clone.id]));
+  const refGraphs = new Map();
+  const refGraph = (d) => refGraphs.get(d) ?? refGraphs.set(d, JSON.parse(readFileSync(join(d, "graph.json"), "utf8"))).get(d);
 
   const runs = join(cloneDir, "verify", "_runs");
   const refShot = (p) => {
@@ -784,17 +792,14 @@ export async function verify({
         }
 
         // structure and accessibility tree (the overlay's subtree when it is one)
+        let structure = null;
         const ariaPath = art && join(art, "aria.yml");
         if (!ariaPath || !existsSync(ariaPath) || !readFileSync(ariaPath, "utf8").trim()) skip("structure", "no reference AX tree: re-capture the node");
         else {
           const cloneAria = await page.locator(scopeCss ? `css=${scopeCss}` : "body").ariaSnapshot({ timeout: 20000 }).catch(() => "");
           writeFileSync(join(out, "clone.aria.yml"), cloneAria);
-          const d = diffAria(parseAria(readFileSync(ariaPath, "utf8"), { ignore }), parseAria(cloneAria, { ignore }));
-          const bad = d.missing.length || d.extra.length || d.order;
-          put("structure", {
-            ran: true, count: d.ref, status: bad ? "fail" : "pass",
-            reason: bad ? [d.missing.length && `missing on the clone: ${d.missing.slice(0, 8).join(" | ")}`, d.extra.length && `only on the clone: ${d.extra.slice(0, 8).join(" | ")}`, d.order && "same entries, different order"].filter(Boolean).join("; ") : null,
-          }, d);
+          // put once the clone's Tab order is read (below), after every other live check
+          structure = diffAria(parseAria(readFileSync(ariaPath, "utf8"), { ignore }), parseAria(cloneAria, { ignore }));
         }
 
         // human eye, in place on the reached node (scoped to the overlay); dead controls on request
@@ -847,6 +852,29 @@ export async function verify({
           const cloneAt = await labelsAtWidths(page, at, refWidths.height ?? height, refWidths.scope ? scopeCss : null);
           const d = widthsDiff(refWidths, cloneAt, widthAllow);
           put("widths", { ran: true, count: d.compared, status: d.passed ? "pass" : "fail", reason: widthsReason(d) }, { ...d, widths: at, clone: cloneAt });
+        }
+
+        // structure, with the Tab order: the reference's focus.json vs the clone's, same scope
+        if (structure) {
+          const d = structure;
+          const refFocus = readJson(art && join(art, "focus.json"));
+          const cloneFocus = refFocus ? await focusOrder(page, refFocus.scope ? scopeCss : null).catch(() => null) : null;
+          const fd = refFocus && cloneFocus ? focusDiff(refFocus, cloneFocus) : null;
+          const bad = d.missing.length || d.extra.length || d.order || fd;
+          put("structure", {
+            ran: true, count: d.ref, status: bad ? "fail" : "pass",
+            reason: bad ? [d.missing.length && `missing on the clone: ${d.missing.slice(0, 8).join(" | ")}`, d.extra.length && `only on the clone: ${d.extra.slice(0, 8).join(" | ")}`, d.order && "same entries, different order", fd && `focus order differs at stop ${fd.stop}: reference ${fd.ref}, clone ${fd.clone}`].filter(Boolean).join("; ") : null,
+          }, { ...d, focus: refFocus ? { ref: refFocus.order, clone: cloneFocus?.order ?? null, diff: fd } : "ref focus order not captured" });
+        }
+
+        // interactions: every reference edge of every kind vs the clone walk's, edge by edge
+        const cloneInv = readJson(cn.info?.artifacts && join(cloneDir, cn.info.artifacts, "inventory.json"));
+        if (!inv) skip("interactions", "no reference inventory: re-capture the node");
+        else if (!cloneInv) skip("interactions", "clone node not walked: walk the clone with this walker");
+        else {
+          const d = edgeDiff(inv, cloneInv, { pairOf, refNodes: refGraph(pair.ref.dir).nodes, cloneNodes: g.data.nodes });
+          if (!d.compared) put("interactions", notApplicable("the reference node fired no interaction to compare"), d);
+          else put("interactions", { ran: true, count: d.compared, status: d.passed ? "pass" : "fail", reason: interactionsReason(d) }, d);
         }
       }
 

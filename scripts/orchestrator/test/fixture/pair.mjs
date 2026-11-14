@@ -9,6 +9,9 @@
 //   ws read   the ref reads shifts over a websocket (/shifts/list); the clone mirrors it as
 //             GET /api/shifts but drops the `end` field from each shift
 //   dead      the filters modal's "Apply" button does something on the ref, nothing on the clone
+//   shifts    the interaction kit (site.mjs kitBody): the clone's right-click on the shift opens
+//             nothing, its alt+m shortcut is unbound, and its required field shows no message;
+//             double-click, drag, the pattern field and the file input behave the same
 //
 // Plus a synthetic name that differs on purpose ("Alex Doe" vs "Sam Rivera") and is masked, so
 // a mask is proven to hide data that is allowed to differ. The reports page is identical on
@@ -17,7 +20,7 @@
 
 import { createServer } from "node:http";
 
-import { acceptWs } from "./site.mjs";
+import { acceptWs, kitBody } from "./site.mjs";
 
 const shell = (body, title, css = "") => `<!doctype html><html lang="en"><head><title>${title}</title>
 <style>
@@ -26,7 +29,7 @@ main{padding:12px}.overlay{position:fixed;z-index:50;inset:20% 30%;background:#f
 [hidden]{display:none!important}.person{display:block;width:240px;height:22px;margin:4px 0}
 aside{display:block;width:160px;height:48px;margin-top:12px}${css}
 </style></head><body>
-<header><nav aria-label="Main"><a href="/app/">Home</a> <a href="/app/reports">Reports</a> <a href="https://example.org/help">Help</a></nav></header>
+<header><nav aria-label="Main"><a href="/app/">Home</a> <a href="/app/reports">Reports</a> <a href="/app/shifts">Shifts</a> <a href="https://example.org/help">Help</a></nav></header>
 <main>${body}</main></body></html>`;
 
 // The ref reads over a socket; the clone over its HTTP mirror of the same call.
@@ -85,7 +88,7 @@ function site(variant) {
       });
       return;
     }
-    const page = url.pathname === "/app/" ? home(variant) : url.pathname === "/app/reports" ? reports(variant) : null;
+    const page = url.pathname === "/app/" ? home(variant) : url.pathname === "/app/reports" ? reports(variant) : url.pathname === "/app/shifts" ? shell(kitBody(variant, "/api"), "Shifts") : null;
     if (!page) return res.writeHead(404, { "content-type": "text/plain" }).end("not found");
     res.writeHead(200, { "content-type": "text/html" }).end(page);
   });

@@ -12,29 +12,65 @@ export const TEMPLATE_THRESHOLD = 0.92;
 
 /** A node's lifecycle. `expanding` is transient: a crash leaves it there, load() requeues it. */
 export const STATUSES = ["frontier", "expanding", "closed", "built", "verified", "gap", "bounded"];
-export const EDGE_KINDS = ["click", "hover", "keyboard", "scroll", "redirect", "navigation", "write"];
+export const EDGE_KINDS = ["click", "hover", "keyboard", "scroll", "redirect", "navigation", "write", "contextmenu", "dblclick", "key", "drag", "input", "submit", "upload"];
 
 /**
  * Replay cost per edge kind for shortest paths. A write is never part of a replay route:
  * reaching a state through someone else's write would dirty the reference.
  */
-export const EDGE_COST = { redirect: 0, hover: 0.5, scroll: 0.5, click: 1, keyboard: 1, navigation: 1, write: Infinity };
+export const EDGE_COST = {
+  redirect: 0, hover: 0.5, scroll: 0.5, click: 1, keyboard: 1, navigation: 1, write: Infinity,
+  // interaction kinds the walker fires besides a click (interactions.mjs); each replays from its
+  // edge's element (a right-click, a key, a drag offset, the synthetic values typed, a fixture file)
+  contextmenu: 1, dblclick: 1, key: 1, drag: 1.5, input: 1, submit: 1, upload: 2,
+};
 
 // Tracking and cache-busting keys: a value that changes on every load must not make a new node.
 const TRACKING = /^(utm_[a-z]+|gclid|fbclid|msclkid|mc_[a-z]+|_ga|ref|ref_src|cmpid|cachebuster|cache_buster|_t|_ts|ts|timestamp|nocache|_)$/i;
 
-/** Query keys sorted, tracking keys and the fragment dropped, trailing slash trimmed. */
-export function canonicalUrl(raw) {
-  const u = new URL(raw);
-  const kept = [...u.searchParams].filter(([k]) => !TRACKING.test(k)).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  u.search = new URLSearchParams(kept).toString();
-  u.hash = "";
-  if (u.pathname.length > 1) u.pathname = u.pathname.replace(/\/+$/, "");
-  return u.toString();
+/** A fragment that carries a route in a hash-routed app (`#/list/Kiosk`, `#!/home`). */
+export const ROUTE_HASH = /^#!?\//;
+
+/** Sorted query with tracking keys dropped (for the URL and for a route fragment's own query). */
+const cleanQuery = (params) =>
+  new URLSearchParams([...params].filter(([k]) => !TRACKING.test(k)).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))).toString();
+
+/** A route fragment, canonical: its own query cleaned like the URL's, a trailing slash trimmed. */
+function canonicalHash(hash) {
+  const [path, query = ""] = hash.split(/\?(.*)/s);
+  const q = cleanQuery(new URLSearchParams(query));
+  const p = path.length > 2 ? path.replace(/\/+$/, "") : path;
+  return `${p}${q ? `?${q}` : ""}`;
 }
 
-export function nodeId(url, signature, state = "") {
-  return "n_" + createHash("sha1").update(`${canonicalUrl(url)}\n${state}\n${signature.join("\n")}`).digest("hex").slice(0, 12);
+/**
+ * Query keys sorted, tracking keys dropped, trailing slash trimmed. The fragment is dropped
+ * unless it carries a route (`#/...`, `#!/...`), or `anyHash` is set: a graph that learned the
+ * app routes by plain fragments (`meta.hashRoutes`, set by the walker when a fragment-only change
+ * rebuilt the page). A hash-routed SPA's screens are separate nodes, not one.
+ */
+export function canonicalUrl(raw, { anyHash = false } = {}) {
+  const u = new URL(raw);
+  const hash = u.hash;
+  u.search = cleanQuery(u.searchParams);
+  u.hash = "";
+  if (u.pathname.length > 1) u.pathname = u.pathname.replace(/\/+$/, "");
+  const keep = hash.length > 1 && (ROUTE_HASH.test(hash) || anyHash);
+  return keep ? `${u.toString()}${canonicalHash(hash)}` : u.toString();
+}
+
+/** The route fragment of a URL, canonical, or "" (what bound.mjs and compare.mjs key families on). */
+export function routeHash(raw, { anyHash = false } = {}) {
+  try {
+    const h = new URL(raw).hash;
+    return h.length > 1 && (ROUTE_HASH.test(h) || anyHash) ? canonicalHash(h) : "";
+  } catch {
+    return "";
+  }
+}
+
+export function nodeId(url, signature, state = "", opts = {}) {
+  return "n_" + createHash("sha1").update(`${canonicalUrl(url, opts)}\n${state}\n${signature.join("\n")}`).digest("hex").slice(0, 12);
 }
 
 // ---------- gap reasons ----------
@@ -100,7 +136,24 @@ function ruleMatches(rule, n, fields) {
   const test = (key, value) => rule[key] === undefined || [rule[key]].flat().some((p) => ruleRe(p).test(value ?? ""));
   if (rule.kind !== undefined && ![rule.kind].flat().includes(n.kind)) return false;
   if (rule.template !== undefined && ![rule.template].flat().includes(n.template)) return false;
-  return test("url", fields.path) && test("title", fields.title) && test("heading", fields.heading) && test("breadcrumb", fields.breadcrumb) && test("label", n.label);
+  const url = rule.url === undefined || [fields.path, fields.pathHash].filter((v) => v !== undefined).some((v) => [rule.url].flat().some((p) => ruleRe(p).test(v)));
+  return url && test("title", fields.title) && test("heading", fields.heading) && test("breadcrumb", fields.breadcrumb) && test("label", n.label);
+}
+
+/** A node's path plus query, and the same with its fragment (a hash-routed app's route lives there). */
+function pathFields(n) {
+  try {
+    const u = new URL(n.href ?? n.url);
+    return { path: u.pathname + u.search, pathHash: u.hash ? u.pathname + u.search + u.hash : undefined };
+  } catch {
+    return { path: "" };
+  }
+}
+
+/** The scope the first matching rule gives a node (url, label, kind, title and heading as known so far), or null. */
+export function scopeByRules(rules, n) {
+  const fields = { ...pathFields(n), title: n.info?.title, heading: n.info?.heading, breadcrumb: n.info?.breadcrumb };
+  return (rules ?? []).find((r) => ruleMatches(r, n, fields))?.scope ?? null;
 }
 
 /**
@@ -117,13 +170,9 @@ export function tagScopes(g, map, extra = () => ({})) {
   for (const r of rules) if (!r.scope) throw new Error(`scope rule without a scope: ${JSON.stringify(r)}`);
   const nodes = Object.values(g.data.nodes);
   for (const n of nodes) {
-    let path = "";
-    try {
-      const u = new URL(n.href ?? n.url);
-      path = u.pathname + u.search;
-    } catch {}
+    const { path, pathHash } = pathFields(n);
     const ex = extra(n) ?? {};
-    const fields = { path, title: n.info?.title ?? ex.title, heading: n.info?.heading ?? ex.heading, breadcrumb: n.info?.breadcrumb ?? ex.breadcrumb };
+    const fields = { path, pathHash, title: n.info?.title ?? ex.title, heading: n.info?.heading ?? ex.heading, breadcrumb: n.info?.breadcrumb ?? ex.breadcrumb };
     const hit = rules.find((r) => ruleMatches(r, n, fields));
     n.scope = hit ? hit.scope : null;
     n.scopeBy = hit ? `rule ${rules.indexOf(hit) + 1}` : null;
@@ -198,11 +247,12 @@ export class Graph {
    * Returns `{ node, isNew }`; a node already in the graph is returned untouched (dedupe).
    */
   addNode({ url, signature, state = "", kind = "page", label, entry = false, interactive = 0, modules = [], inScope = true, bound }) {
-    const id = nodeId(url, signature, state);
+    const canon = { anyHash: !!this.data.meta.hashRoutes };
+    const id = nodeId(url, signature, state, canon);
     if (this.data.nodes[id]) return { node: this.data.nodes[id], isNew: false };
     const node = {
       id,
-      url: canonicalUrl(url),
+      url: canonicalUrl(url, canon),
       // The URL as found: canonicalising can change what a server answers (a trailing slash).
       href: url,
       state,
@@ -220,6 +270,7 @@ export class Graph {
     };
     this.data.nodes[id] = node;
     node.template = this.#classify(node);
+    if (this.data.meta.walkScope) node.walkScope = scopeByRules(this.data.meta.walkScope.rules, node);
     if (node.status === "frontier") this.frontier.push(id, id);
     this.#emit("node.added", { node: this.#public(node) });
     return { node, isNew: true };
@@ -231,6 +282,33 @@ export class Graph {
     return n;
   }
 
+  /**
+   * A placeholder node (bounded or unreachable when found) read for real when it is walked: its
+   * skeleton, modules and template replace the placeholder's, so it never samples as one template
+   * with every other placeholder. The id stays, so its edges stay.
+   */
+  reread(id, { signature, modules = [], label }) {
+    const n = this.node(id);
+    const t = this.data.templates[n.template];
+    if (t) t.members = t.members.filter((m) => m !== id);
+    n.signature = signature;
+    n.modules = modules.map((m) => this.#classifyModule(m));
+    if (label) n.label = label;
+    n.template = this.#classify(n);
+    return n;
+  }
+
+  /** Make a known node an entry (`--entries-from`): depth 0, re-sifted, depths pushed downstream. */
+  markEntry(id) {
+    const n = this.node(id);
+    if (n.entry) return n;
+    n.entry = true;
+    n.depth = 0;
+    if (this.frontier.has(id)) this.frontier.update(id);
+    this.#relax(id);
+    return n;
+  }
+
   /** Attach what a worker learned about a node (title, artifacts dir, overlay scope, bounds). */
   annotate(id, patch) {
     const n = this.node(id);
@@ -239,9 +317,47 @@ export class Graph {
     return n;
   }
 
+  /** This graph's canonical URL: route fragments kept, and any fragment once `meta.hashRoutes` is set. */
+  canon(url) {
+    return canonicalUrl(url, { anyHash: !!this.data.meta.hashRoutes });
+  }
+
+  // ---------- scope-driven walk ----------
+
+  /**
+   * `O explore --scope-map <json> --scope <ids>`: nodes whose scope (scope.json rules, the format
+   * `tagScopes` reads) is one of `ids` outrank every other node in the queue; an overlay or state
+   * with no rule of its own takes the scope of the node it was opened from. `expandOut` says
+   * whether out-of-scope nodes are expanded (else the walker closes them shallowly).
+   */
+  setWalkScope({ rules = [], ids = [], expandOut = false } = {}) {
+    this.data.meta.walkScope = ids.length ? { rules, ids, expandOut } : null;
+    for (const id of Object.keys(this.data.nodes)) this.rescope(id);
+  }
+
+  /** Re-read one node's walk scope (after its title and heading are known); re-sift it if queued. */
+  rescope(id) {
+    const ws = this.data.meta.walkScope;
+    const n = this.data.nodes[id];
+    if (!ws || !n) return;
+    const own = scopeByRules(ws.rules, n);
+    const next = own ?? (n.walkScopeBy === "parent" ? n.walkScope : null);
+    if (own) delete n.walkScopeBy;
+    if (next !== n.walkScope) {
+      n.walkScope = next;
+      if (this.frontier.has(id)) this.frontier.update(id);
+    }
+  }
+
+  /** In the walk's scope (always true when the walk has none). */
+  inWalk(n) {
+    const ws = this.data.meta.walkScope;
+    return !ws || ws.ids.includes(n.walkScope);
+  }
+
   /** Nodes on one canonical URL, to match a state against ones already seen there. */
   nodesAt(url) {
-    const c = canonicalUrl(url);
+    const c = this.canon(url);
     return Object.values(this.data.nodes).filter((n) => n.url === c);
   }
 
@@ -259,17 +375,26 @@ export class Graph {
 
   // ---------- edges ----------
 
-  /** Add an interaction. Deduped on (from, to, kind, element name); updates depth and in-degree. */
-  addEdge({ from, to, kind, element = {}, request = null, reversible = kind !== "write" }) {
+  /**
+   * Add an interaction. Deduped on (from, to, kind, element name); updates depth and in-degree.
+   * `via` is the interaction a `write` edge was fired by when it was not a click (a submit, a drag).
+   */
+  addEdge({ from, to, kind, element = {}, request = null, reversible = kind !== "write", via }) {
     if (!EDGE_KINDS.includes(kind)) throw new Error(`bad edge kind ${kind}`);
     this.node(from);
     this.node(to);
     const id = "e_" + createHash("sha1").update(`${from}|${to}|${kind}|${element.name ?? element.selector ?? ""}`).digest("hex").slice(0, 12);
     if (this.data.edges[id]) return { edge: this.data.edges[id], isNew: false };
-    const edge = { id, from, to, kind, element, request, reversible, cost: EDGE_COST[kind] };
+    const edge = { id, from, to, kind, element, request, reversible, cost: EDGE_COST[kind], ...(via ? { via } : {}) };
     this.data.edges[id] = edge;
     this.#index(edge);
     const target = this.data.nodes[to];
+    const src = this.data.nodes[from];
+    if (this.data.meta.walkScope && target.kind !== "page" && !target.walkScope && src.walkScope) {
+      target.walkScope = src.walkScope;
+      target.walkScopeBy = "parent";
+      if (this.frontier.has(to)) this.frontier.update(to);
+    }
     if (kind !== "write") this.#relax(from);
     const t = this.data.templates[target.template];
     if (t) {
@@ -349,7 +474,7 @@ export class Graph {
   // ---------- the queue ----------
 
   /**
-   * Frontier order (reference/graph.md "Priority"): nodes reached only through writes last;
+   * Frontier order (reference/graph.md "Priority"): with a walk scope, in-scope nodes first; nodes reached only through writes last;
    * entry nodes first; then the template with the most in-edges; then shallower; then the
    * one with fewer interactive elements (closes faster); id last so ties are stable.
    */
@@ -357,6 +482,7 @@ export class Graph {
     const x = this.data.nodes[a];
     const y = this.data.nodes[b];
     const k = (n) => [
+      this.inWalk(n) || n.entry ? 0 : 1, // an entry page is where in-scope pages are found
       this.#writeOnly(n) ? 1 : 0,
       n.entry ? 0 : 1,
       -(this.data.templates[n.template]?.inDegree ?? 0),

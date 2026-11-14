@@ -23,7 +23,9 @@ Site-agnostic: nothing here names a target. A build's data lives in its own
 | 7 | scopes (component tags from ordered rules), `requeue --gaps` on the walker's retryable reasons, node pairs (`pairs.json`), Phase D per pair (`verify`: pixels, structure and AX tree, human eye, api, writes), counts and report from the graph plus check records | `graph.mjs` `compare.mjs` `verify.mjs` `run.mjs` `views.mjs` `cli.mjs` | done 2026-11-14 (`test/scope` `test/requeue` `test/verify` `test/verify-e2e`) |
 | 8 | Phase D complete per pair: computed style (walker saves `styles.json`), widths (walker saves `widths.json`), websocket reads vs HTTP mirrors (`ws-map.json`), overlays judged on their own region, `--dead-controls`; check records through `../lib/check-record.mjs` with an output folder | `verify.mjs` `verify-checks.mjs` `explore.mjs` `page-probe.mjs` `../qa/human_eye_lib.mjs` `../qa/labels.mjs` | done 2026-11-14 (`test/verify-checks` `test/verify-e2e`) |
 
-Not done: the walker does not drag, draw, type or upload (Chrome does, SKILL.md section 4);
+| 9 | every interaction kind a first-class edge: right-click, double-click, documented shortcuts and keyboard activation, drag, form input and submit (empty, valid, one invalid value per constraint), uploads; Tab order per node; per-node invariant over every kind; verify's `interactions` check edge by edge. Hash routes in node identity; a scope-driven walk (`--scope-map --scope`, shallow out-of-scope, `--entries-from`); STATE_BOUND never bounds an entry or in-scope page | `interactions.mjs` `explore.mjs` `graph.mjs` `bound.mjs` `compare.mjs` `verify.mjs` `run.mjs` | done 2026-11-14 (`test/interactions` `test/verify-e2e`) |
+
+Not done: the walker does not draw on a map or canvas (Chrome does, SKILL.md section 4);
 the live diagram is regenerated per chunk, not streamed; workers share no graph file, so
 each area's walk is diffed from its own copy. `verify` compares widths by structural labels
 only (no per-width pixels), and a websocket read only against an HTTP mirror named in
@@ -141,30 +143,72 @@ and runs:
 | check | how | fails on |
 |---|---|---|
 | `pixels` | the saved reference screenshot vs a clone screenshot at the same width, height, DPR and full-page mode; `masks.json` rects or selectors masked on both; built-in PNG codec and pixelmatch's YIQ distance (the repo has no pixelmatch). An overlay: both cropped to the union of its two boxes | any unmasked differing pixel (or `maxDiffPixels`); counts per landmark and named region, plus `diff.png` |
-| `structure` | the saved `aria.yml` vs the clone's AX snapshot of the same scope: structural roles, names (digits as `#`), states, order; table rows are data | a missing or invented entry, or a reordering |
+| `structure` | the saved `aria.yml` vs the clone's AX snapshot of the same scope: structural roles, names (digits as `#`), states, order; table rows are data. Plus the saved Tab order (`focus.json`) vs the clone's | a missing or invented entry, or a reordering; a focus stop that differs |
 | `style` | the saved `styles.json` (`page-probe.mjs` `styleManifest`) vs the clone's, elements matched by role, name (digits as `#`) and nth; font family, size, weight, line height, colour, background, border width/style/colour, radius, padding, margin, width, height, gap, box shadow | a property beyond its `--styles-allow` ceiling (default equal); no `styles.json` is skipped "ref style not captured" |
 | `human_eye` | `../qa/human_eye_lib.mjs` (what `human_eye.mjs` runs) on the reached node, scoped to an overlay; `--dead-controls` clicks every enabled control from a fresh reach in a context that aborts writes | any finding; any dead enabled control |
 | `widths` | the saved `widths.json` (`../qa/labels.mjs` labels at the capture width and every sweep width) vs the clone's at the same widths, scoped like the reference | a label that differs at some width beyond what differs at the capture width; no `widths.json` is skipped "ref widths not captured" |
 | `api` | the reference node's captured reads (`inventory.json` + `xhr/`) vs the clone's requests while reaching the node, by `METHOD path-template`; its websocket reads (`wsReads` + `ws/`) vs the clone's HTTP mirror named in `--ws-map` | an operation the clone never calls; a query key, request field or response field on one side only; `ws call not mirrored` |
+| `interactions` | the reference node's rows (`inventory.json` candidates and interactions) vs the clone walk's rows on the paired node (`edgeDiff`, section 11) | an edge that opens nothing on the clone, opens something only on the clone, or opens a node that does not pair; a file input with other accept types or size limit; one line per edge |
 | `writes` | `../qa/write_roundtrip.mjs` on the clone, for rows of `--writes` matching the pair | a failed round trip; a node with write edges or pending writes and no row is skipped, so not verified |
 
 Each check writes `<clone>/verify/<clone node>/<check>.json` through `../lib/check-record.mjs`
 (`writeCheckRecord(name, record, dir)`, shape `{ ran, count, status, reason, at }`) plus
 `<check>.detail.json`; a check that does not apply is `skipped` with a reason starting "not
 applicable". The clone graph node gets
-`verify: { ref, pixels, structure, style, human_eye, widths, api, writes, passed, at }` and status `verified`
+`verify: { ref, pixels, structure, style, human_eye, widths, api, interactions, writes, passed, at }` and status `verified`
 when it passed. A node counts as verified only when the graph says so **and** every record on
 disk agrees (`nodeVerified`), so `O status` and `O report` count from the graph plus records:
 `verified N / built M / ref-only K` (built = matched pairs).
 
-### 11. Files
+### 11. Interaction kinds (`interactions.mjs`)
+
+After the clicks, the walker fires every other kind on the node, each from the verified
+pre-state, each target ending as one row of `inventory.json` `interactions` (`kind`, `role`,
+`name`, `key` or `case`, `outcome`, `to`, or `unfired` with a reason):
+
+| kind | fired on | edge |
+|---|---|---|
+| `contextmenu` | elements with a contextmenu listener (`LISTENER_HOOK`, an init script that instruments `addEventListener`), grid cells, rows, chips; grouped by row template, a heuristic group probed once and walked further only when it opened something, STATE_BOUND past that | what the right-click opened |
+| `dblclick` | elements with a dblclick listener, grid cells | what it opened |
+| `key` | each `--keyboards` shortcut (else `PROBE_KEYS` when the page listens globally) once per template; Enter or Space on each control with a click edge, once per template | what it opened; `sameAsClick` on activation rows |
+| `drag` | `[draggable]`, sliders, focusable separators, dragstart listeners, small resize-cursor handles; moved by `DRAG_BY` px | a state when the box, value or skeleton changed |
+| `input` / `submit` | each form or field group: submit empty; fill valid (`syntheticValue`), then submit (a write, aborted on the reference); one invalid value per constraint (`invalidValues`), submitted; a search box gets one query | the validation state (`formState`: invalid fields, messages, disabled submit) |
+| `upload` | each file input: accept list and size limit always; with `--allow-post`, `fixtureFile` accepted and rejected | what the page showed |
+
+A state that keeps the skeleton (a message in place, a moved handle) is its own node keyed by
+the interaction (`drag:separator:Resize pane`), never merged into the page. Every edge records
+what replays it, and `replayEdge` replays any kind for the walker's `reach` and verify's
+`reachClone`. `focus.json` is the Tab order (`focusOrder`). The invariant
+(`interactionInvariant`) holds a node open until every row is an edge, a fired result or a known
+reason.
+
+`compare.mjs` `edgeDiff` is the `interactions` check: each reference row is matched to the clone
+row of the same kind, key or case, role and name (digits normalised); the clone's target must
+pair with the reference's (`pairs.json`), or both change nothing, or both end in the same fired
+result. A matched control with no row on the clone (no listener, no binding) changes nothing.
+Write rows belong to `writes`; a shortcut declared `implemented: false` is listed, not failed.
+
+### 12. Hash routes and a scope-driven walk
+
+`canonicalUrl` keeps a fragment that carries a route (`#/...`, `#!/...`), cleaned like a query;
+`meta.hashRoutes` (set by the walker when a fragment-only change rebuilt the page) keeps any
+fragment. Families (`bound.mjs` `admit`) and views (`compare.mjs` `viewKey`) include the route.
+`g.setWalkScope({ rules, ids, expandOut })` (`--scope-map --scope`) puts in-scope nodes and
+entries first in the queue; a node's `walkScope` comes from the rules (path with and without
+the fragment), an overlay or state without a rule inherits its opener's. Out of scope and not
+an entry: captured and inventoried, every candidate `unfired: shallow`, `info.shallow`. `admitUrl`
+never bounds an entry or an in-scope URL, and a walk re-opens any such node an earlier walk
+bounded (`g.reread` replaces its placeholder skeleton). `--entries-from` (`readEntriesFile`)
+seeds entries.
+
+### 13. Files
 
 | file | written by | content |
 |---|---|---|
 | `discovery/graph.json` | `save()`, atomically (tmp + rename) | the whole graph |
 | `discovery/events.jsonl` | every mutation, append-only | `node.added`, `edge.added`, `template.added`, `node.status` |
 | `<clone>/pairs.json` | `compare`, `verify` | matched pairs, ref-only (with reasons), clone-only |
-| `discovery/nodes/<id>/` | the walker | `screenshot.png` `dom.html` `aria.yml` `styles.json` `widths.json` `inventory.json` `xhr/` `ws/` |
+| `discovery/nodes/<id>/` | the walker | `screenshot.png` `dom.html` `aria.yml` `styles.json` `widths.json` `focus.json` `inventory.json` (candidates, interactions, forms, files) `xhr/` `ws/` |
 | `<clone>/verify/<node>/` | `verify` | a record and detail per check, `ref.png` `clone.png` `diff.png` (`*.crop.png` for an overlay) `clone.aria.yml` `clone.styles.json` |
 | `<clone>/verify/report[-scope].md` | `report` | the end-to-end table |
 
@@ -179,6 +223,8 @@ node run.mjs status | tree | live | pending | frontier | route <id> | loops
 node run.mjs requeue <id> | requeue --failed | requeue --gaps [--reason <text>] | gap <id> --reason "..."
 node run.mjs explore --dir <copy> --only-prefix /area ...       # one parallel worker per area
 node run.mjs explore ... --ws-guard block|off --retries 3 --login-pattern <regex> --widths off|1024,1280
+node run.mjs explore ... --keyboards <repo>/keyboards.json      # documented shortcuts on every template
+node run.mjs explore ... --scope-map scope.json --scope S01,S02 [--expand-out] [--entries-from entries.txt]
 node run.mjs scope --map scope.json                             # tag nodes by component
 node run.mjs status --scope S01 | tree --scope S01              # per scope
 node run.mjs compare --ref <dirs> --clone <dirs> [--scope S01] --out diff.md   # + <clone>/pairs.json

@@ -174,9 +174,9 @@ test("counts and report: verified only when every applicable check passed with i
   const cg = JSON.parse(readFileSync(graphPath, "utf8"));
   const pass = { status: "pass", reason: null };
   const na = { status: "n/a", reason: "not applicable: no write edges" };
-  cg.nodes.c_home.verify = { ref: "r_home", pixels: pass, structure: { status: "fail", reason: 'missing on the clone: button "Open filters"' }, style: pass, human_eye: pass, widths: pass, api: pass, writes: na, passed: false };
-  cg.nodes.c_modal.verify = { ref: "r_modal", pixels: pass, structure: pass, style: pass, human_eye: pass, widths: pass, api: pass, writes: na, passed: true };
-  cg.nodes.c_unit.verify = { ref: "r_unit7", pixels: pass, structure: pass, style: pass, human_eye: pass, widths: pass, api: pass, writes: na, passed: true };
+  cg.nodes.c_home.verify = { ref: "r_home", pixels: pass, structure: { status: "fail", reason: 'missing on the clone: button "Open filters"' }, style: pass, human_eye: pass, widths: pass, api: pass, interactions: pass, writes: na, passed: false };
+  cg.nodes.c_modal.verify = { ref: "r_modal", pixels: pass, structure: pass, style: pass, human_eye: pass, widths: pass, api: pass, interactions: pass, writes: na, passed: true };
+  cg.nodes.c_unit.verify = { ref: "r_unit7", pixels: pass, structure: pass, style: pass, human_eye: pass, widths: pass, api: pass, interactions: pass, writes: na, passed: true };
   writeFileSync(graphPath, JSON.stringify(cg));
   for (const id of ["c_modal", "c_unit"]) {
     const dir = join(clone, "verify", id);
@@ -195,7 +195,7 @@ test("counts and report: verified only when every applicable check passed with i
   const md = report(clone, "S01");
   assert.match(md, /# Phase D report: S01/);
   assert.match(md, /verified 1 \/ built 2 \/ ref-only 2/);
-  assert.match(md, /\| \/app\/ `r_home` \| \/app\/ `c_home` \| pass \| \*\*FAIL\*\* \| pass \| pass \| pass \| pass \| n\/a \| no \| structure: missing on the clone: button "Open filters" \|/);
+  assert.match(md, /\| \/app\/ `r_home` \| \/app\/ `c_home` \| pass \| \*\*FAIL\*\* \| pass \| pass \| pass \| pass \| pass \| n\/a \| no \| structure: missing on the clone: button "Open filters" \|/);
   assert.match(md, /`r_help` \| page \| `\/help` \| gap \| gap: out of scope \|/);
   assert.match(md, /`r_modal2` .*not on the clone/);
 });

@@ -84,7 +84,8 @@ describe("walker on /hub/", { skip, timeout: 600_000 }, () => {
     for (const name of ["Search employees", "Find people", "Open config"]) {
       const es = edges(w).filter((e) => e.from === home.id && e.element.name === name);
       assert.ok(es.length >= 1, `${name} has an edge`);
-      assert.ok(es.every((e) => e.kind === "click"), `${name} is a click, not a write`);
+      // its click edge, plus the Enter activation edge (kind key) to the same result: never a write
+      assert.ok(es.some((e) => e.kind === "click") && es.every((e) => ["click", "key"].includes(e.kind)), `${name} is a click, not a write`);
     }
     assert.ok(w.hits.writes.includes("POST /hub/api/v1/employees/search/multi"), "read POST reached the server");
     assert.ok(w.hits.writes.includes("POST /hub/api/people"));

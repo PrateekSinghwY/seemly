@@ -10,6 +10,11 @@
 //            that reads on load and writes on a click
 //   /flaky/  a page that answers 503 three times before it works, and one that never does
 //   /sess/   a control that ends the session; every page after it redirects to /login
+//   /kit/    every interaction kind besides a click (`kitBody`, shared with pair.mjs): a
+//            right-click glance, a double-click panel, a drag handle, a documented shortcut
+//            (alt+m), a form with a required and a pattern field, a file input
+//   /spa/    a hash-routed app (/spa/app#/list/Kiosk, #/list/Categories, #/item/N), a page whose
+//            plain fragments (#one, #two) rebuild it, and a deep admin area out of scope
 
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
@@ -110,6 +115,81 @@ const flakyHome = plain("Flaky", `<h1>Flaky</h1><nav><a href="/flaky/reports">Re
 const sessHome = plain("Session", `<h1>Session</h1><button onclick="fetch('/sess/api/expire')">Expire session</button> <a href="/sess/team">Team</a>`);
 const login = plain("Sign in", `<h1>Sign in</h1><form><label>User <input name="u"></label><label>Password <input type="password" name="p"></label><button type="button">Sign in</button></form>`);
 
+/**
+ * The interaction kit. `variant` "ref" is the full behaviour; "clone" differs in exactly three
+ * interactions: its right-click opens nothing, alt+m is unbound, and its required field shows no
+ * message. `api` is the path prefix its writes go to.
+ */
+export function kitBody(variant = "ref", api = "/kit/api") {
+  const ref = variant === "ref";
+  return `<style>.pop{position:fixed;z-index:40;top:120px;left:420px;width:260px;background:#fff;border:1px solid #333;padding:8px}
+.split{display:flex;align-items:center;gap:0}#pane{background:#eef}#handle{width:8px;height:40px;background:#999;cursor:col-resize;display:inline-block}
+.chip{display:inline-block;padding:4px 8px;background:#dfe;margin:4px}.err{color:#a00}</style>
+<h1>Shifts</h1>
+<div role="grid" aria-label="Week"><div role="row">
+<div role="gridcell" tabindex="0" class="chip" id="shift" aria-label="Shift 7:00 AM-3:30 PM">7:00 AM-3:30 PM</div>
+<div role="gridcell" tabindex="0" class="chip" id="day" aria-label="Tuesday">Tuesday</div>
+</div></div>
+<div id="glance" role="dialog" aria-label="Shift glance" class="pop" hidden><h2>Shift glance</h2><p>Break 30 min</p><button data-close>Close</button></div>
+<div id="detail" role="dialog" aria-label="Day detail" class="pop" hidden><h2>Day detail</h2><ul><li>Early</li><li>Late</li></ul><button data-close>Close</button></div>
+<div id="quick" role="menu" aria-label="Quick menu" class="pop" hidden><h2>Quick menu</h2><button role="menuitem" data-close>Today</button></div>
+<div class="split"><div id="pane" style="width:200px">Pane</div><div id="handle" role="separator" aria-orientation="vertical" aria-label="Resize pane" aria-valuenow="200" tabindex="0"></div></div>
+<form id="req" aria-label="Shift request" novalidate>
+<label for="code">Shift code</label> <input id="code" name="code" required aria-describedby="code-err"> <span id="code-err" class="err" hidden></span>
+<label for="badge">Badge</label> <input id="badge" name="badge" pattern="[A-Z]{2}-\\d{4}" aria-describedby="badge-err"> <span id="badge-err" class="err" hidden></span>
+<button type="submit">Request shift</button>
+</form>
+<p><label for="att">Attachment (CSV, max 2 MB)</label> <input type="file" id="att" accept=".csv,text/csv"></p>
+<p id="upload-msg" hidden></p>
+<script>
+const $ = (id) => document.getElementById(id);
+for (const b of document.querySelectorAll("[data-close]")) b.addEventListener("click", () => (b.closest(".pop").hidden = true));
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") for (const p of document.querySelectorAll(".pop")) p.hidden = true; });
+${ref ? `$("shift").addEventListener("contextmenu", (e) => { e.preventDefault(); $("glance").hidden = false; });
+window.addEventListener("keydown", (e) => { if (e.altKey && (e.code === "KeyM" || e.key.toLowerCase() === "m")) $("quick").hidden = false; });` : ""}
+$("day").addEventListener("dblclick", () => ($("detail").hidden = false));
+$("handle").addEventListener("pointerdown", (e) => {
+  const x0 = e.clientX, w0 = $("pane").offsetWidth;
+  const mv = (ev) => { const w = Math.max(100, w0 + ev.clientX - x0); $("pane").style.width = w + "px"; $("handle").setAttribute("aria-valuenow", String(w)); };
+  const up = () => { document.removeEventListener("pointermove", mv); document.removeEventListener("pointerup", up); };
+  document.addEventListener("pointermove", mv); document.addEventListener("pointerup", up);
+});
+$("req").addEventListener("submit", (e) => {
+  e.preventDefault();
+  let ok = true;
+  const show = (f, el, msg) => { el.textContent = msg; el.hidden = !msg; f.setAttribute("aria-invalid", msg ? "true" : "false"); if (msg) ok = false; };
+  show($("code"), $("code-err"), ${ref ? `$("code").value ? "" : "Shift code is required"` : `""`});
+  show($("badge"), $("badge-err"), $("badge").value && !/^[A-Z]{2}-\\d{4}$/.test($("badge").value) ? "Badge must look like AB-1234" : "");
+  if (!ok || !$("code").value) return;
+  fetch("${api}/shift-requests", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: $("code").value, badge: $("badge").value }) });
+});
+$("att").addEventListener("change", () => {
+  const f = $("att").files[0];
+  const good = /\\.csv$/i.test(f.name);
+  $("upload-msg").textContent = good ? "Ready: " + f.name : "Only CSV files are accepted";
+  $("upload-msg").hidden = false;
+  if (good) fetch("${api}/uploads", { method: "POST", body: f });
+});
+</script>`;
+}
+
+/** The hash-routed app: a list home, two named lists, `items` item routes; and a fragment-tabbed page. */
+const spaApp = (items) => `<!doctype html><html><head><title>Lists</title></head><body><main id="view"></main><script>
+function render() {
+  const h = location.hash;
+  let m;
+  if (h === "#/list/Kiosk") view.innerHTML = "<h1>Kiosk</h1><table><tr><th>Name</th></tr><tr><td>Lobby</td></tr><tr><td>Dock</td></tr></table>";
+  else if (h === "#/list/Categories") view.innerHTML = "<h1>Categories</h1><ul><li>Late</li><li>Early</li><li>Missed</li></ul><p><button>Sort</button></p>";
+  else if ((m = h.match(/^#\\/item\\/(\\d+)$/))) view.innerHTML = "<h1>Item " + m[1] + "</h1><p>Detail</p>";
+  else view.innerHTML = "<h1>Lists</h1><nav><a href='#/list/Kiosk'>Kiosk</a> <a href='#/list/Categories'>Categories</a> <a href='/spa/app/tabs'>Tabs</a></nav><ul>" + Array.from({ length: ${items} }, (_, i) => "<li><a href='#/item/" + (i + 1) + "'>Item " + (i + 1) + "</a></li>").join("") + "</ul>";
+}
+addEventListener("hashchange", render); render();
+</script></body></html>`;
+const spaTabs = `<!doctype html><html><head><title>Tabs</title></head><body><main><h1>Tabs</h1><nav><a href="#one">One</a> <a href="#two">Two</a></nav><div id="t"></div></main><script>
+function render() { t.innerHTML = location.hash === "#two" ? "<table><tr><td>a</td><td>b</td></tr><tr><td>c</td><td>d</td></tr></table><ol><li>x</li><li>y</li></ol>" : "<p>First tab</p>"; }
+addEventListener("hashchange", render); render();
+</script></body></html>`;
+
 /** A websocket endpoint without dependencies: RFC 6455 handshake, text frames only. */
 export function acceptWs(req, socket, onText) {
   const accept = createHash("sha1").update(`${req.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
@@ -146,7 +226,7 @@ export function acceptWs(req, socket, onText) {
 }
 
 export function start() {
-  const hits = { logout: 0, writes: [], ws: [], flaky: 0, loggedOut: false, expired: false };
+  const hits = { logout: 0, writes: [], ws: [], flaky: 0, loggedOut: false, expired: false, admin: [] };
   const server = createServer((req, res) => {
     const url = new URL(req.url, "http://x");
     if (req.method !== "GET") hits.writes.push(`${req.method} ${url.pathname}`);
@@ -178,6 +258,22 @@ export function start() {
       if (url.pathname === "/flaky/reports") {
         if (++hits.flaky <= 3) return html(plain("Service Unavailable", "<h1>Service Unavailable</h1>"), 503);
         return html(plain("Reports", "<h1>Reports</h1><table><tr><td>Hours</td></tr></table>"));
+      }
+    }
+    if (url.pathname.startsWith("/kit/")) {
+      if (url.pathname === "/kit/") return html(plain("Kit", kitBody("ref", "/kit/api")));
+      if (req.method === "POST") return json({ ok: true });
+    }
+    if (url.pathname.startsWith("/spa/")) {
+      if (url.pathname === "/spa/") return html(plain("Spa", `<h1>Spa</h1><nav><a href="/spa/app">App</a> <a href="/spa/admin">Admin</a></nav>`));
+      if (url.pathname === "/spa/app") return html(spaApp(4));
+      if (url.pathname === "/spa/app/tabs") return html(spaTabs);
+      const adm = url.pathname.match(/^\/spa\/admin((?:\/a\d+)*)$/);
+      if (adm) {
+        const depth = adm[1].split("/").length - 1;
+        hits.admin.push(url.pathname);
+        const links = depth < 4 ? Array.from({ length: 4 }, (_, i) => `<a href="${url.pathname}/a${i + 1}">Area ${i + 1}</a>`).join(" ") : "";
+        return html(plain("Admin", `<h1>Admin ${depth}</h1><nav>${links}</nav>`));
       }
     }
     if (url.pathname.startsWith("/hub/")) {

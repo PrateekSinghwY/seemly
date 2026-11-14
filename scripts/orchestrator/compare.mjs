@@ -3,11 +3,14 @@
 // then, per page, every control the reference walked is looked up in the clone's walk by its
 // label (digits normalised, as the clone's data differs from the reference's).
 //
-// Four findings per page:
+// Five findings per page:
 //   missing     a control the reference shows that the clone does not render
 //   disabled    live on the reference, disabled on the clone
 //   dead        on the reference it opened or changed something; on the clone the same control did nothing
 //   no-surface  a dialog, menu or state the reference opens from this page that the clone never shows
+//   interactions  a right-click, double-click, key, drag, input, submit or upload that opens or
+//               changes something on the reference and nothing on the clone (`edgeDiff` judges
+//               the same per node pair, edge by edge, for verify's `interactions` check)
 // plus whole pages the reference has and the clone has none of.
 //
 // `pairNodes` goes one level finer, node by node, for Phase D (`verify.mjs`): every reference
@@ -20,17 +23,22 @@ import { join } from "node:path";
 
 import { similarity } from "./algorithms.mjs";
 import { pathPattern } from "./bound.mjs";
-import { UNSCOPED, gapReason, inScopeId } from "./graph.mjs";
+import { UNSCOPED, gapReason, inScopeId, routeHash } from "./graph.mjs";
+import { VERB, rowKey } from "./interactions.mjs";
 
 const OPENED = new Set(["navigation", "overlay", "hover-overlay", "state", "popup", "page", "known", "bounded"]);
 
 export const norm = (s) => (s ?? "").toLowerCase().replace(/\s+/g, " ").replace(/\d+([.,]\d+)*/g, "#").trim();
 
-/** Which view of a route a URL is: path family plus the flag-like query keys (values only for short enums). */
+/**
+ * Which view of a route a URL is: path family plus the flag-like query keys (values only for
+ * short enums), plus the route fragment's family in a hash-routed app (`/metaui#/list/:id`).
+ */
 export function viewKey(url) {
   const u = new URL(url);
   const keys = [...u.searchParams.keys()].filter((k) => /^(open_|tab$|view$|section$)/.test(k)).sort();
-  return `${pathPattern(u.pathname)}${keys.length ? `?${keys.join("&")}` : ""}`;
+  const route = routeHash(url).split("?")[0];
+  return `${pathPattern(u.pathname)}${keys.length ? `?${keys.join("&")}` : ""}${route ? `#${pathPattern(route.slice(1))}` : ""}`;
 }
 
 const RANK = { verified: 5, built: 4, closed: 3, expanding: 1, frontier: 1, bounded: 0, gap: 0 };
@@ -63,12 +71,19 @@ function load(dirs, scope) {
   for (const { n, dir } of best.values()) {
     if (n.status === "gap" || n.status === "bounded") continue;
     const key = viewKey(n.href ?? n.url);
-    const p = pages.get(key) ?? { key, nodes: [], controls: new Map(), surfaces: new Map() };
+    const p = pages.get(key) ?? { key, nodes: [], controls: new Map(), surfaces: new Map(), interactions: new Map() };
     pages.set(key, p);
     p.nodes.push(n);
     const inv = n.info?.artifacts && join(dir, n.info.artifacts, "inventory.json");
     if (inv && existsSync(inv)) {
-      for (const c of JSON.parse(readFileSync(inv, "utf8")).candidates) {
+      const doc = JSON.parse(readFileSync(inv, "utf8"));
+      for (const r of doc.interactions ?? []) {
+        if (r.unfired !== undefined || !r.name) continue;
+        const k = rowKey(r);
+        const prev = p.interactions.get(k);
+        p.interactions.set(k, { ...r, opened: (prev?.opened ?? false) || (r.to?.length ?? 0) > 0 });
+      }
+      for (const c of doc.candidates) {
         if (!c.name) continue;
         const k = `${c.role}|${norm(c.name)}`;
         const prev = p.controls.get(k);
@@ -112,6 +127,8 @@ function shellOf(side, minViews = 3) {
 function union(side) {
   const controls = new Map();
   const surfaces = new Map();
+  const interactions = new Map();
+  for (const p of side.pages.values()) for (const [k, r] of p.interactions ?? []) interactions.set(k, { ...r, opened: (interactions.get(k)?.opened ?? false) || r.opened });
   for (const p of side.pages.values()) {
     for (const [k, c] of p.controls) {
       const prev = controls.get(k);
@@ -119,11 +136,17 @@ function union(side) {
     }
     for (const [k, n] of p.surfaces) surfaces.set(k, n);
   }
-  return { controls, surfaces };
+  return { controls, surfaces, interactions };
 }
 
 function diffPage(rp, cp, skip = new Set(), skipSurf = new Set()) {
-  const row = { key: rp.key, missing: [], disabled: [], dead: [], noSurface: [] };
+  const row = { key: rp.key, missing: [], disabled: [], dead: [], noSurface: [], interactions: [] };
+  // Interactions besides the click: one the reference answers that the clone does not.
+  for (const [k, r] of rp.interactions ?? []) {
+    if (!r.opened) continue;
+    const c = cp.interactions?.get(k);
+    if (!c?.opened) row.interactions.push(`${VERB[r.kind] ?? r.kind}${r.key && r.role !== "shortcut" ? ` ${r.key}` : ""} on "${r.name}"${r.case ? ` [${r.case}]` : ""}`);
+  }
   for (const [k, c] of rp.controls) {
     if (skip.has(k)) continue;
     const m = findControl(cp, c.role, c.name);
@@ -166,11 +189,12 @@ export function toMarkdown(r) {
     L.push("");
   }
   for (const p of r.pages) {
-    const n = p.missing.length + p.disabled.length + p.dead.length + p.noSurface.length;
+    const n = p.missing.length + p.disabled.length + p.dead.length + p.noSurface.length + (p.interactions?.length ?? 0);
     if (!n) continue;
     L.push(`## \`${p.key}\` (${n})`, "");
     if (p.noSurface.length) L.push(`- **opens on the reference, never on the clone:** ${p.noSurface.join(" · ")}`);
     if (p.dead.length) L.push(`- **does something on the reference, nothing on the clone:** ${p.dead.join(" · ")}`);
+    if (p.interactions?.length) L.push(`- **an interaction answers on the reference, not on the clone:** ${p.interactions.join(" · ")}`);
     if (p.disabled.length) L.push(`- **disabled on the clone only:** ${p.disabled.join(" · ")}`);
     if (p.missing.length) L.push(`- **not rendered on the clone:** ${p.missing.join(" · ")}`);
     L.push("");
@@ -281,4 +305,118 @@ export function pairNodes(refDirs, cloneDirs, { scope } = {}) {
     refOnly: refOnly.map(({ r, reason }) => ({ key: keyOf(r.n), kind: r.n.kind, scope: r.n.scope ?? null, ref: side(r), status: r.n.status, reason: reason ?? "not on the clone" })),
     cloneOnly: cloneOnly.map((c) => ({ key: keyOf(c.n), kind: c.n.kind, clone: side(c) })),
   };
+}
+
+// ---------- edges, node pair by node pair (verify's `interactions` check) ----------
+
+/** One side's interaction rows on one node: clicks from `candidates`, every other kind from `interactions`. */
+export function interactionRows(inv) {
+  const rows = [];
+  for (const c of inv?.candidates ?? []) rows.push({ kind: "click", role: c.role, name: c.name, outcome: c.outcome, unfired: c.unfired, to: c.children ?? [], blocked: c.blocked });
+  for (const r of inv?.interactions ?? []) rows.push(r);
+  return rows;
+}
+
+/** A row that sent a write: the writes check owns it (the reference's outcome is the failure path). */
+const isWriteRow = (r) => r.outcome === "write-attempt" || (r.blocked?.length ?? 0) > 0;
+/** Unfired on the clone where the reference fired: these are defects, the rest are not compared. */
+const CLONE_DEFECT = new Set(["disabled", "not-found", "unclickable", "not-focusable", "submit-disabled", "no-submit"]);
+const OUTCOME_CLASS = (o) => (/^native-dialog: /.test(o ?? "") ? "a native dialog" : /^download: /.test(o ?? "") ? "a download" : o);
+
+/**
+ * Edge-level comparison of one node pair. For every reference row (kind, key or case, element
+ * role and name), the clone row of the same key must lead to a node that pairs with the
+ * reference target (`pairOf`: ref id -> clone id), or both must change nothing, or both end in
+ * the same fired result. A gap or bounded target on both sides matches by URL family. Rows the
+ * reference did not fire, and write rows, are not compared; a documented shortcut declared not
+ * implemented (keyboards.json) is listed as declared, not failed. Upload rows also compare the
+ * accept list and size limit. Returns `{ compared, failures, notCompared, declared, passed }`;
+ * each failure carries a message ("right-click on 'X' opens nothing on the clone").
+ */
+export function edgeDiff(refInv, cloneInv, { pairOf = new Map(), refNodes = {}, cloneNodes = {} } = {}) {
+  const ref = interactionRows(refInv);
+  const clone = interactionRows(cloneInv);
+  const byKey = new Map();
+  for (const r of clone) (byKey.get(rowKey(r)) ?? byKey.set(rowKey(r), []).get(rowKey(r))).push(r);
+  const names = new Set(clone.map((r) => `${r.role}|${norm(r.name)}`));
+  const pairedClone = new Set(pairOf.values());
+  const label = (nodes, id) => (nodes[id] ? `"${String(nodes[id].label ?? id).slice(0, 60)}"` : id);
+  const family = (n) => {
+    try {
+      return n.status === "gap" ? new URL(n.href ?? n.url).toString().split("#")[0] : viewKey(n.href ?? n.url);
+    } catch {
+      return n.url;
+    }
+  };
+  const sameTarget = (a, b) =>
+    a.some((t) => {
+      const p = pairOf.get(t);
+      if (p) return b.includes(p);
+      const rn = refNodes[t];
+      return b.some((c) => {
+        const cn = cloneNodes[c];
+        return rn && cn && !pairedClone.has(c) && ["gap", "bounded"].includes(rn.status) && ["gap", "bounded"].includes(cn.status) && family(rn) === family(cn);
+      });
+    });
+  const failures = [];
+  const notCompared = [];
+  const declared = [];
+  let compared = 0;
+  for (const r of ref) {
+    if (r.unfired !== undefined || isWriteRow(r)) {
+      // An upload never fired on the reference (no writes there) still compares its accept list and size limit.
+      if (!(r.kind === "upload" && (r.unfired === "upload-needs-writes" || r.unfired === undefined))) {
+        notCompared.push({ row: rowKey(r), why: r.unfired ?? "write on the reference (the writes check owns it)" });
+        continue;
+      }
+    }
+    const q = byKey.get(rowKey(r));
+    const c = q?.shift();
+    const verb = `${VERB[r.kind] ?? r.kind}${r.kind === "key" ? ` ${r.key}` : ""}`;
+    const what = r.role === "shortcut" ? `${verb}` : `${verb} on '${r.name}'${r.case ? ` [${r.case}]` : ""}`;
+    const fail = (message) => {
+      if (r.kind === "key" && r.declared?.implemented === false) declared.push({ row: rowKey(r), message, reason: r.declared.reason ?? null });
+      else failures.push({ kind: r.kind, key: rowKey(r), element: { role: r.role, name: r.name }, message });
+    };
+    compared++;
+    if (r.kind === "upload") {
+      if (!c) fail(`${what}: no such file input on the clone`);
+      else if ((r.accept ?? []).join(",") !== (c.accept ?? []).join(",")) fail(`${what} accepts ${(r.accept ?? []).join(", ") || "anything"} on the reference, ${(c.accept ?? []).join(", ") || "anything"} on the clone`);
+      else if ((r.maxSize ?? null) !== (c.maxSize ?? null)) fail(`${what} is limited to ${r.maxSize ?? "no size"} on the reference, ${c.maxSize ?? "no size"} on the clone`);
+      continue;
+    }
+    // No row on the clone: the control is there but takes no such interaction (no listener, no
+    // binding), so it changes nothing; or the control is not there at all.
+    const cr = c ?? (r.role === "shortcut" || names.has(`${r.role}|${norm(r.name)}`) ? { outcome: "inert", to: [] } : null);
+    if (!cr) {
+      fail(`${what}: no such control on the clone`);
+      continue;
+    }
+    if (cr.unfired !== undefined) {
+      if (CLONE_DEFECT.has(cr.unfired)) fail(`${what}: ${cr.unfired} on the clone`);
+      else {
+        compared--;
+        notCompared.push({ row: rowKey(r), why: `clone ${cr.unfired}` });
+      }
+      continue;
+    }
+    if (isWriteRow(cr)) {
+      compared--;
+      notCompared.push({ row: rowKey(r), why: "write on the clone (the writes check owns it)" });
+      continue;
+    }
+    const a = r.to ?? [];
+    const b = cr.to ?? [];
+    if (!a.length && !b.length) {
+      if (OUTCOME_CLASS(r.outcome) !== OUTCOME_CLASS(cr.outcome)) fail(`${what}: ${OUTCOME_CLASS(r.outcome)} on the reference, ${OUTCOME_CLASS(cr.outcome)} on the clone`);
+    } else if (a.length && !b.length) fail(`${what} opens nothing on the clone (the reference opens ${label(refNodes, a[0])})`);
+    else if (!a.length) fail(`${what} does nothing on the reference, opens ${label(cloneNodes, b[0])} on the clone`);
+    else if (!sameTarget(a, b)) fail(`${what} opens ${label(refNodes, a[0])} on the reference, ${label(cloneNodes, b[0])} on the clone (not a pair)`);
+  }
+  return { compared, failures, notCompared, declared, passed: !failures.length };
+}
+
+export function interactionsReason(d) {
+  if (d.passed) return null;
+  return `${d.failures.length} interaction(s) differ: ${d.failures.slice(0, 8).map((f) => f.message).join(" | ")}`;
 }

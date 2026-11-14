@@ -29,9 +29,12 @@ one page component or one module archetype in `REGISTRY.md`. This is where reuse
 from: the graph decides what is the same, not the builder.
 
 **Edge** = one interaction that moves between nodes or changes a node's state:
-`click`, `hover`, `keyboard`, `scroll`, `redirect`, `navigation` (href), `write`. Edges
-carry the element (role, name, selector), the request it fires if any, and whether it
-is reversible, metered or irreversible.
+`click`, `hover`, `keyboard`, `scroll`, `redirect`, `navigation` (href), `write`, and the
+interaction kinds `contextmenu`, `dblclick`, `key`, `drag`, `input`, `submit`, `upload`. Edges
+carry the element (role, name, selector, plus what replays it: the key, the drag offset, the
+synthetic values typed, the fixture file's accept list), the request it fires if any (a `write`
+edge fired by another kind records it in `via`), and whether it is reversible, metered or
+irreversible.
 
 **Frontier** = nodes discovered but not yet expanded. **Closed** = expanded, every edge
 recorded, every child in the graph. **Built** = closed and verified on four channels.
@@ -100,7 +103,9 @@ backtracking: a backtrack is just the next pop, reached by its replay route.
 ## Reaching a node: replay routes
 
 Every node is reached by its cheapest route from an entry (multi-source Dijkstra; redirect 0,
-hover and scroll 0.5, click, keyboard and navigation 1, write never). The walker jumps to the
+hover and scroll 0.5, click, keyboard, navigation, contextmenu, dblclick, key, input and submit 1,
+drag 1.5, upload 2, write never). A hash-routed app's route lives in the fragment (`#/list/Kiosk`,
+`#!/...`): it is part of node identity and of the replayed URL, so a route is reached directly. The walker jumps to the
 last URL-addressable page on the route and replays only the clicks after it, so a URL that
 encodes state (`?view=`, `?filter=`) is the cheapest restore and is preferred as identity. The
 same routes start the golden traces.
@@ -118,10 +123,28 @@ same routes start the golden traces.
    surface (modal, menu, popover; scoped to its own root), the skeleton changed in place
    (state: tab, accordion, expanded row), a native dialog or download (recorded), or nothing
    (inert; the human-eye pass asks whether the clone's twin is dead).
-4. Inventory but do not fire: disabled controls, text fields (typed input is QA's validation
-   battery), native selects (their option lists are recorded).
+4. Fire every other interaction kind (`interactions.mjs`), each from the verified pre-state and
+   each a row with an outcome:
+   - **right-click** (`contextmenu`) on every element with a contextmenu listener (detected by
+     an instrumented `addEventListener`) and on grid cells, rows and chips: one per distinct row
+     template, more while they open, STATE_BOUND sampling past that;
+   - **double-click** (`dblclick`) on elements with a dblclick listener and on grid cells;
+   - **keys** (`key`): each shortcut in the target's `keyboards.json` (`--keyboards`; a probe
+     set when the page listens for keys globally and there is no file) once per template, and
+     Enter or Space on every control with a click edge, once per template;
+   - **drag** on draggable elements, sliders, splitters and resize handles, by a fixed offset; a
+     changed box or value is a state;
+   - **forms** (`input`, `submit`): submitted empty, filled valid (then submitted: a write,
+     aborted on the reference and queued), and one invalid value per constraint, each validation
+     state a node (required messages, `aria-invalid`, a disabled submit); a search box gets one
+     short query, never the battery;
+   - **uploads** (`upload`): the accept list and size limit read off the UI always; an accepted
+     and a rejected fixture file only where writes are allowed (the clone).
+   The Tab order is saved per node (`focus.json`) for the structure check. Disabled controls are
+   inventoried, not fired.
 5. A state or overlay re-exposes everything around it; only what is new to it is expanded there.
-6. Close the node and save the graph, so a crash resumes at the next pop.
+6. Close the node only when every element has an outcome for every interaction kind that
+   applies to it, then save the graph, so a crash resumes at the next pop.
 
 ## Writes while walking
 
@@ -136,8 +159,9 @@ Edges that mutate the reference's client state (drawing on a map, editing layers
 
 ## Sampling repeated siblings
 
-Rows of one list (siblings sharing a css path up to their indexes) in a group larger than
-STATE_BOUND are sampled: five, and more only while they keep leading to different templates,
+STATE_BOUND never bounds an entry page or a page in the walk's scope, and never an in-scope
+page's own controls: it only samples repeated row siblings. Rows of one list (siblings sharing a
+css path up to their indexes) in a group larger than STATE_BOUND are sampled: five, and more only while they keep leading to different templates,
 up to STATE_BOUND. The group, its size and the number tried are recorded on the node. Shell
 controls (the same role, name and place) are expanded on two templates and recorded as
 inherited elsewhere. A data-volume variant (no records vs some) is a separate state, captured
@@ -161,13 +185,21 @@ on purpose, not left to whichever account was open.
 Every element the inventory lists with a live handler or navigation: nav items and
 their dropdown children, pickers and each option, tabs, accordions, carousel arrows to
 both ends, "more" and "load more", pagination, sort and filter controls, row and card
-clicks, modal triggers, close buttons, escape and outside-click dismissals, keyboard
-shortcuts from `keyboard.json`, deep links and query-param views, redirects (recorded as
+clicks, right-click menus, double-click panels, drag handles, form validation states, file
+inputs, modal triggers, close buttons, escape and outside-click dismissals, keyboard
+shortcuts from `keyboards.json`, deep links and query-param views, redirects (recorded as
 edges with the redirect chain), and hover-revealed actions. "Probably nothing behind it"
 is not a reason to skip; the queue decides, the builder does not.
 
 ## Cost control
 
+- **A scope-driven walk** (`O explore --scope-map scope.json --scope S01,S02`): nodes whose
+  scope (the rules `O scope` reads; a route fragment counts as path) is listed outrank every
+  other node; an overlay or state with no rule takes its opener's scope. Out-of-scope nodes are
+  captured and inventoried but not expanded (`info.shallow`) unless `--expand-out`; entry pages
+  are always expanded. `--entries-from <file>` seeds entries (one URL per line, or a JSON list or
+  route map). A walk that spends its budget deep in one admin area while working screens stay
+  unreached is the failure this exists for.
 - DEPTH bounds navigation edges to the target's path prefix by default (all under it); nothing else is bounded. The graph is closed when the frontier is empty, however many nodes that took.
 - Feed and pagination edges are expanded to the captured depth, never to the
   reference's advertised total.
@@ -183,7 +215,8 @@ is not a reason to skip; the queue decides, the builder does not.
 ```
 discovery/graph.json          nodes, edges, templates, module archetypes, bounds: the queue itself
 discovery/events.jsonl        every mutation, append-only (what the live view and a post-mortem read)
-discovery/nodes/<id>/         screenshot.png, dom.html, aria.yml, inventory.json, xhr/*.json per node
+discovery/nodes/<id>/         screenshot.png, dom.html, aria.yml, styles.json, widths.json, focus.json,
+                              inventory.json (candidates, interactions, forms, files), xhr/, ws/
 discovery/pending-writes.jsonl  controls held for BLOCKED, with any request they tried
 discovery/tree.md             the graph as a tree from each entry by cheapest route, verdict per node
 discovery/graph.html          the live diagram (status colour, kind shape, write edges dashed)
@@ -215,8 +248,9 @@ loop, start to finish, every time. The human should never have to restate it.
    optimally. Plain DFS backtracking in a browser has to replay the whole path for every
    backtrack, and it revisits shared surfaces. The queue reaches each node exactly once, by
    its shortest route, and dedupe by node id and template stops any surface being walked
-   twice. Typed input, drag, uploads and states behind a write are explored by hand and fed
-   back with `O requeue` / `O gap`, so the walker's blind spots become nodes too. After each
+   twice. Right-clicks, double-clicks, keys, drags, typed input and uploads are walker edges;
+   canvas drawing and states behind a write are explored by hand and fed back with `O requeue` /
+   `O gap`, so the walker's blind spots become nodes too. After each
    walk, `O requeue --gaps` puts every gap with a retryable reason back on the frontier; the
    walk is not closed while one is left. `O scope --map <scope.json>` tags each node with its
    component, so every count below can be read per scope.
@@ -228,10 +262,11 @@ loop, start to finish, every time. The human should never have to restate it.
 3. **Walk the clone to CLOSED** on an isolated copy (own DB copy, own ports), with writes
    allowed.
 3b. **Phase D on every built node** (SKILL.md section 0.4): pixels, structure and accessibility tree,
-   style, human eye, widths, network (`api_diff.mjs`), writes. `O verify --ref <ref> --clone
-   <clone> [--scope id] --ws-map ws-map.json --dead-controls` runs all seven per matched node
-   pair (pixels, structure and AX tree, computed style, human eye with dead controls, widths,
-   HTTP and websocket reads, writes), an overlay judged on its own region, and writes a check
+   style, human eye, widths, network (`api_diff.mjs`), interactions, writes. `O verify --ref
+   <ref> --clone <clone> [--scope id] --ws-map ws-map.json --dead-controls` runs all eight per
+   matched node pair (pixels, structure with AX tree and Tab order, computed style, human eye
+   with dead controls, widths, HTTP and websocket reads, every reference edge of every kind vs
+   the clone walk's, writes), an overlay judged on its own region, and writes a check
    record per channel under `<clone>/verify/<node>/`. A node without passing check records is
    `needs-verify`, never built.
 4. **Diff the two graphs:** `O compare --ref <ref> --clone <clone>`. Confirm every line by
@@ -257,8 +292,8 @@ command takes `--dir <graph dir>` (default `never_to_be_pushed/discovery`).
 
 | command | what it does |
 |---|---|
-| `O init --target <url> [--prefix /p]... [--entry <url>]...` | create the graph from entry pages |
-| `O explore [--max-nodes N] [--only-prefix /area]... [--ws-guard block\|off] [--retries N] [--login-pattern re] [--widths off\|list]` | walk to CLOSED, one chunk at a time |
+| `O init --target <url> [--prefix /p]... [--entry <url>]... [--entries-from file]` | create the graph from entry pages |
+| `O explore [--max-nodes N] [--only-prefix /area]... [--ws-guard block\|off] [--retries N] [--login-pattern re] [--widths off\|list] [--keyboards keyboards.json] [--scope-map scope.json --scope ids [--expand-out]] [--entries-from file] [--no-interactions]` | walk to CLOSED, one chunk at a time; every interaction kind fired; in-scope nodes first |
 | `O visit <url>` | add one more entry page |
 | `O requeue <node>` · `O requeue --failed` | put one node, or every give-up of a dead browser, back on the frontier |
 | `O requeue --gaps [--reason <text>]` | put every gap with a retryable reason back (the walker's `gapReason`; a gap with no reason counts as retryable) |
@@ -267,7 +302,7 @@ command takes `--dir <graph dir>` (default `never_to_be_pushed/discovery`).
 | `O status [--scope id]` · `O tree [--scope id]` · `O live` · `O frontier` · `O route <node>` · `O loops` · `O pending` | views; status adds `VERIFY verified N / built M / ref-only K` once pairs exist |
 | `O plan` · `O next-unit` · `O packet <unit>` · `O unit-done <unit> [--verified]` | build units in dependency order |
 | `O compare --ref <dirs> --clone <dirs> [--scope id] [--out diff.md]` | walked-graph diff, plus `<clone>/pairs.json` |
-| `O verify --ref <dirs> --clone <dir> [--scope id] [--node id] [--masks masks.json] [--writes writes.json] [--styles-allow f] [--ws-map f] [--dead-controls] [--ref-prefix p] [--clone-prefix p] [--dpr 1]` | Phase D per node pair: pixels, structure, style, human eye, widths, api (HTTP and ws), writes; exits 1 when any pair fails |
+| `O verify --ref <dirs> --clone <dir> [--scope id] [--node id] [--masks masks.json] [--writes writes.json] [--styles-allow f] [--ws-map f] [--dead-controls] [--ref-prefix p] [--clone-prefix p] [--dpr 1]` | Phase D per node pair: pixels, structure (with Tab order), style, human eye, widths, api (HTTP and ws), interactions (edge by edge), writes; exits 1 when any pair fails |
 | `O report [--clone <dir>] [--scope id] [--out file]` | markdown: ref node -> clone node -> each check -> reason, then every ref-only node with its reason |
 
 **scope.json:** `{ "rules": [{ "scope": "S01", "url": "^/app/timecards" }, { "scope": "S02",

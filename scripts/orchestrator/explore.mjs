@@ -13,7 +13,9 @@
 //   - an edge is a `write` only when a request it sent is a write, never a read POST;
 //   - a lost login stops the run (SessionLost, exit 3) with the node back on the frontier, a
 //     transient error is retried with backoff, and every gap carries a machine-readable reason;
-//   - a node closes only when every element on it is an edge or a recorded reason.
+//   - a node closes only when every element on it is an edge or a recorded reason, for every
+//     interaction kind that applies to it (click, right-click, double-click, key, drag, input,
+//     submit, upload: interactions.mjs, test/interactions.test.mjs).
 
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -22,7 +24,8 @@ import { join } from "node:path";
 import { openReference, settle } from "../lib/pw.mjs";
 import { similarity } from "./algorithms.mjs";
 import { STATE_BOUND, admit, inScope, repeatGroup } from "./bound.mjs";
-import { canonicalUrl } from "./graph.mjs";
+import { scopeByRules } from "./graph.mjs";
+import { INTERACTION_UNFIRED, LISTENER_HOOK, focusOrder, interactionInvariant, locateFor, perform, readShortcuts, replayEdge, runInteractions } from "./interactions.mjs";
 import { DEFAULT_WIDTHS, readLabels } from "../qa/labels.mjs";
 import { FLOATING_SEL, clearMarks, markFloating, newOverlays, openFloating, openOnLoad, probe, sessionState, styleManifest } from "./page-probe.mjs";
 import { RequestClassifier, classify, classifyFrame, pairFrames, parseFrame } from "./safety.mjs";
@@ -64,9 +67,10 @@ const FIRED_PREFIX = /^(native-dialog|download): /;
 /** Not fired, with the reason it was not. */
 export const UNFIRED_REASONS = new Set([
   "disabled", "field", "select", "skipped:never", "skipped:risky", "inherited", "template-seen", "sampled-out",
-  "state-not-restored", "not-found", "unclickable", "error",
+  "state-not-restored", "not-found", "unclickable", "error", "shallow", ...INTERACTION_UNFIRED,
 ]);
 const UNFIRED_PREFIX = /^shell: /;
+const knownUnfired = (r) => UNFIRED_REASONS.has(r) || UNFIRED_PREFIX.test(r ?? "");
 
 /**
  * Every candidate the probe found must end as exactly one row, and each row as an edge (with
@@ -198,7 +202,22 @@ export async function explore(g, dir, opts = {}) {
   const {
     maxNodes = Infinity, risky = "record", allowPost = [], readPosts = "off", pace = 0, sample = SAMPLE, onlyPrefix = null,
     retries = RETRIES, backoffMs = BACKOFF_MS, loginPattern = null, wsGuard = "block", widths = DEFAULT_WIDTHS, log = (s) => console.error(s),
+    keyboards = null, walkScope = null, entries = [], interactions = true, stateBound = STATE_BOUND,
   } = opts;
+  // Documented shortcuts (a keyboards.json path or its parsed document), fired on every template.
+  const shortcuts = keyboards ? readShortcuts(typeof keyboards === "string" ? JSON.parse(readFileSync(keyboards, "utf8")) : keyboards) : null;
+  // Writes allowed (the clone, walked with --allow-post): file inputs get real uploads.
+  const writesAllowed = allowPost.length > 0;
+  if (walkScope) g.setWalkScope(walkScope);
+  const entryUrls = () => new Set(Object.values(g.data.nodes).filter((n) => n.entry).map((n) => n.url));
+  // A bound never holds an entry page or an in-scope page: put back any an earlier walk bounded.
+  for (const n of Object.values(g.data.nodes)) {
+    if (n.status !== "bounded" || !n.bound || /through a write/.test(n.bound)) continue;
+    if (n.entry || (g.data.meta.walkScope && g.inWalk(n))) {
+      n.bound = null;
+      g.setStatus(n.id, "frontier", null);
+    }
+  }
   const sweep = widths === "off" ? [] : [widths].flat().map(Number).filter((w) => w > 0);
   const loginRe = loginPattern ? new RegExp(loginPattern, "i") : LOGIN_URL;
   // A worker that owns part of the site: nodes outside its prefixes are set aside, untouched,
@@ -219,6 +238,8 @@ export async function explore(g, dir, opts = {}) {
   if (existsSync(allowedPath)) reqs.load(readFileSync(allowedPath, "utf8").split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }));
 
   const { context, close } = await openReference(opts);
+  // Which elements listen for a right-click, a double-click, a drag or keys (interactions.mjs).
+  await context.addInitScript({ content: LISTENER_HOOK });
   const net = { blocked: [], reads: 0, popups: [], dialogs: [], downloads: [], bodies: null, ws: null, failures: [] };
   // Broken flows: an API answer >= 400 or an uncaught script error, tied to the node and the
   // click that caused it, in errors.jsonl. A walk that only records what opened misses a save
@@ -388,10 +409,7 @@ export async function explore(g, dir, opts = {}) {
 
   async function fire(el, kind) {
     if (kind === "redirect") return; // it happened on its own when the page loaded
-    const l = await locate(page, el);
-    if (!l) throw new Error(`replay: "${el.name || el.css}" not found`);
-    if (kind === "hover") await l.hover({ timeout: 4000 });
-    else await l.click({ timeout: 4000 });
+    await replayEdge(page, { kind, element: el }, locate);
     await settle(page, 2500);
     await checkPage(page, { byName: el.name ?? "" });
   }
@@ -503,8 +521,21 @@ export async function explore(g, dir, opts = {}) {
     appendFileSync(pendingPath, JSON.stringify({ key, kind, node: n.id, url: n.url, label: n.label, element: { role: c.role, name: c.name, css: c.css }, why, blocked }) + "\n");
   }
 
+  /**
+   * STATE_BOUND for a discovered URL. It never bounds an entry page or a page in the walk's
+   * scope: a bound samples repeated row siblings, it is not a reason to leave a working screen
+   * unwalked (a key planner page stayed `bounded` on a 400-node walk).
+   */
+  function admitUrl(url) {
+    const canon = g.canon(url);
+    if (entryUrls().has(canon)) return { ok: true };
+    const ws = g.data.meta.walkScope;
+    if (ws && ws.ids.includes(scopeByRules(ws.rules, { url: canon, href: url, kind: "page", label: "" }))) return { ok: true };
+    return admit(g.data.meta.bounds, url, stateBound, { anyHash: !!g.data.meta.hashRoutes });
+  }
+
   async function readLink(n, c) {
-    const href = canonicalUrl(c.href);
+    const href = g.canon(c.href);
     const element = { role: c.role, name: c.name, css: c.css, nth: c.nth, href };
     const known = g.data.meta.links[href];
     if (known && g.data.nodes[known]) return { node: g.data.nodes[known], kind: "navigation", element, outcome: "known" };
@@ -513,7 +544,7 @@ export async function explore(g, dir, opts = {}) {
       g.data.meta.links[href] = node.id;
       return { node, kind: "navigation", element, outcome: "out-of-scope" };
     }
-    const b = admit(g.data.meta.bounds, href);
+    const b = admitUrl(href);
     if (!b.ok) {
       const { node } = g.addNode({ url: href, signature: ["bounded"], bound: b.bound, label: `${new URL(href).pathname} (bounded)` });
       return { node, kind: "navigation", element, outcome: "bounded" };
@@ -542,59 +573,25 @@ export async function explore(g, dir, opts = {}) {
     return { node, kind: "navigation", element, outcome: "page" };
   }
 
+  /** Mark what floats and the network counters, before an interaction. */
+  async function begin(n, c) {
+    await page.evaluate(markFloating, FLOATING_SEL);
+    current = { node: n.id, element: `${c.role} "${String(c.name ?? "").slice(0, 60)}"` };
+    return { blocked: net.blocked.length, reads: net.reads, popups: net.popups.length, dialogs: net.dialogs.length, downloads: net.downloads.length, failures: net.failures.length };
+  }
+
   /**
-   * Fire one element from `n`, from the verified pre-state `pre`, and say what happened.
-   * `ensure` re-verifies the pre-state between the hover and the click.
+   * Read what one interaction did, from the pre-state `before` (skeleton) and `urlBefore`, and
+   * record it: a popup or navigation, a new overlay, an in-place state (the skeleton changed, an
+   * aria-expanded opened, or `change.read()` differs from its value before the act: a form's
+   * validation state, a drag's geometry), a native dialog or download, a write attempt, or
+   * nothing (`inert`). `kind` is the edge kind when no write was sent; a write makes it `write`.
    */
-  async function tryElement(n, c, pre, ensure) {
-    const element = { role: c.role, name: c.name, css: c.css, nth: c.nth };
-    const out = { outcome: "inert", children: [] };
-    const link = (kind, node, request = null) => {
-      g.addEdge({ from: n.id, to: node.id, kind, element, request });
+  async function observe(n, c, { kind = "click", element, before, urlBefore, rawBefore, mark, loc, expandedBefore, out, change, changeBefore, stateKey }) {
+    const link = (k, node, request = null) => {
+      g.addEdge({ from: n.id, to: node.id, kind: k, element, request, via: k === "write" && kind !== "click" ? kind : undefined });
       out.children.push(node.id);
     };
-    const loc = await locate(page, c);
-    if (!loc) return unfired(out, "not-found");
-    let before = pre.sig;
-    const urlBefore = canonicalUrl(page.url());
-
-    if (c.haspopup || c.inNav) {
-      await page.evaluate(markFloating, FLOATING_SEL);
-      await loc.hover({ timeout: 3000 }).catch(() => {});
-      await page.waitForTimeout(350);
-      const ov = (await page.evaluate(newOverlays, FLOATING_SEL))[0];
-      if (ov) {
-        const sig = await sigOf(ov.css);
-        const kind = KIND_OF_ROLE[ov.role] ?? "overlay";
-        const { node } = stateNode({ url: page.url(), state: `${kind}:${ov.name || c.name}`, signature: sig, kind, label: `${kind}: ${ov.name || c.name}` });
-        link("hover", node);
-        out.outcome = "hover-overlay";
-      }
-      await page.mouse.move(0, 0);
-      await page.waitForTimeout(200);
-      await page.evaluate(clearMarks);
-      // What the hover opened may still be open: the click fires from the pre-state too.
-      const r = await ensure();
-      if (!r.ok) return out.children.length ? out : unfired(out, "state-not-restored");
-      before = r.pre.sig;
-    }
-
-    await page.evaluate(markFloating, FLOATING_SEL);
-    const mark = { blocked: net.blocked.length, reads: net.reads, popups: net.popups.length, dialogs: net.dialogs.length, downloads: net.downloads.length, failures: net.failures.length };
-    current = { node: n.id, element: `${c.role} "${c.name.slice(0, 60)}"` };
-    const expandedBefore = c.expanded;
-    // A shared or rate-limited reference (a sandbox tenant other people use): space the clicks.
-    if (pace) await page.waitForTimeout(pace);
-    try {
-      await (await locate(page, c) ?? loc).click({ timeout: 4000 });
-    } catch (e) {
-      await page.evaluate(clearMarks).catch(() => {});
-      if (out.children.length) return { ...out, error: e.message.split("\n")[0] };
-      return unfired(out, "unclickable", { error: e.message.split("\n")[0] });
-    }
-    await settle(page, 2500);
-    // A click that lands on a sign-in page or a "session expired" notice: the login is gone.
-    await checkPage(page, { byName: c.name });
     const blocked = net.blocked.slice(mark.blocked);
     const reads = net.reads - mark.reads;
     const popups = net.popups.slice(mark.popups);
@@ -603,8 +600,15 @@ export async function explore(g, dir, opts = {}) {
     // Only a request classified as a write makes the edge a write; read POSTs and beacons do not.
     const viaWrite = blocked.length > 0;
     const request = viaWrite ? { method: blocked[0].method, url: blocked[0].url, why: blocked[0].why } : null;
-    const kindOf = () => (viaWrite ? "write" : "click");
-    if (viaWrite) pending(n, c, "a click sent a write; it was aborted, so what opened is the failure path", blocked, "write");
+    const kindOf = () => (viaWrite ? "write" : kind);
+    if (viaWrite) pending(n, c, `a ${kind} sent a write; it was aborted, so what opened is the failure path`, blocked, "write");
+
+    // A fragment-only change that rebuilt the page: this app routes by fragments, so from now on
+    // a fragment is part of every node's identity (graph meta `hashRoutes`).
+    const rawNow = page.url();
+    if (!g.data.meta.hashRoutes && rawNow !== rawBefore && rawNow.split("#")[0] === rawBefore.split("#")[0] && g.canon(rawNow) === urlBefore) {
+      if (similarity(before, await sigOf()) < SAME_STATE) g.data.meta.hashRoutes = true;
+    }
 
     if (popups.length) {
       for (const url of popups) {
@@ -612,14 +616,14 @@ export async function explore(g, dir, opts = {}) {
         link("navigation", r.node);
       }
       out.outcome = "popup";
-    } else if (canonicalUrl(page.url()) !== urlBefore) {
+    } else if (g.canon(page.url()) !== urlBefore) {
       const url = page.url();
       if (!inScope(url, scope)) {
         const { node } = outNode(url, `${c.name || url} (out of scope)`);
         link("navigation", node);
         out.outcome = "out-of-scope";
       } else {
-        const b = admit(g.data.meta.bounds, url);
+        const b = admitUrl(url);
         if (!b.ok) {
           const { node } = g.addNode({ url, signature: ["bounded"], bound: b.bound, label: `${new URL(url).pathname} (bounded)` });
           link(kindOf(), node, request);
@@ -636,28 +640,124 @@ export async function explore(g, dir, opts = {}) {
       const ov = (await page.evaluate(newOverlays, FLOATING_SEL)).find((o) => o.role !== "tooltip");
       if (ov) {
         const sig = await sigOf(ov.css);
-        const kind = KIND_OF_ROLE[ov.role] ?? "overlay";
-        const { node } = stateNode({ url: page.url(), state: `${kind}:${ov.name || c.name}`, signature: sig, kind, label: `${kind}: ${ov.name || c.name}` });
+        const okind = KIND_OF_ROLE[ov.role] ?? "overlay";
+        const { node } = stateNode({ url: page.url(), state: `${okind}:${ov.name || c.name}`, signature: sig, kind: okind, label: `${okind}: ${ov.name || c.name}` });
         link(kindOf(), node, request);
         out.outcome = "overlay";
       } else {
         const after = await sigOf();
-        const expandedAfter = await loc.getAttribute("aria-expanded").catch(() => null);
-        if (similarity(before, after) < SAME_STATE || (expandedBefore !== expandedAfter && expandedAfter === "true")) {
-          const { node } = stateNode({ url: page.url(), state: `${c.role}:${c.name}`, signature: after, kind: "state", label: `${c.role}: ${c.name}` });
+        const expandedAfter = loc ? await loc.getAttribute("aria-expanded").catch(() => null) : null;
+        const changeAfter = change ? await change.read().catch(() => null) : null;
+        const changed = change ? changeAfter !== changeBefore : false;
+        if (changed) out.change = { before: changeBefore, after: changeAfter };
+        const reshaped = similarity(before, after) < SAME_STATE;
+        if (change && (changed || reshaped)) {
+          // An interaction that reads its own state (a form's validation, a handle's geometry, the
+          // text an upload shows): its result is named by the interaction (or by that state), never
+          // merged by skeleton into another surface that happens to look alike.
+          const { node } = g.addNode({ url: page.url(), state: change.key ? change.key(changeAfter) : stateKey, signature: after, kind: "state", label: change.label });
           if (node.id !== n.id) {
             link(kindOf(), node, request);
             out.outcome = "state";
           }
-        } else if (dialogs.length) out.outcome = `native-dialog: ${dialogs[0].slice(0, 80)}`;
-        else if (downloads.length) out.outcome = `download: ${downloads[0]}`;
-        else if (viaWrite) out.outcome = "write-attempt";
+        } else if (reshaped || (expandedBefore !== expandedAfter && expandedAfter === "true")) {
+          const state = stateKey ?? `${c.role}:${c.name}`;
+          const { node } = stateNode({ url: page.url(), state, signature: after, kind: "state", label: `${kind === "click" ? "" : `${kind} `}${c.role}: ${c.name}` });
+          if (node.id !== n.id) {
+            link(kindOf(), node, request);
+            out.outcome = "state";
+          }
+        }
+        if (!out.children.length) {
+          if (dialogs.length) out.outcome = `native-dialog: ${dialogs[0].slice(0, 80)}`;
+          else if (downloads.length) out.outcome = `download: ${downloads[0]}`;
+          else if (viaWrite) out.outcome = "write-attempt";
+        }
       }
     }
     await page.evaluate(clearMarks).catch(() => {});
     const failed = net.failures.slice(mark.failures).map((f) => `${f.kind} ${f.detail}`);
     current = { node: n.id, element: null };
     return { ...out, blocked: blocked.map((b) => `${b.method} ${b.url}`), reads: reads || undefined, failed: failed.length ? failed : undefined };
+  }
+
+  /**
+   * Fire one element from `n`, from the verified pre-state `pre`, and say what happened.
+   * `ensure` re-verifies the pre-state between the hover and the click.
+   */
+  async function tryElement(n, c, pre, ensure) {
+    const element = { role: c.role, name: c.name, css: c.css, nth: c.nth };
+    const out = { outcome: "inert", children: [] };
+    const loc = await locate(page, c);
+    if (!loc) return unfired(out, "not-found");
+    let before = pre.sig;
+    const urlBefore = g.canon(page.url());
+    const rawBefore = page.url();
+
+    if (c.haspopup || c.inNav) {
+      await page.evaluate(markFloating, FLOATING_SEL);
+      await loc.hover({ timeout: 3000 }).catch(() => {});
+      await page.waitForTimeout(350);
+      const ov = (await page.evaluate(newOverlays, FLOATING_SEL))[0];
+      if (ov) {
+        const sig = await sigOf(ov.css);
+        const kind = KIND_OF_ROLE[ov.role] ?? "overlay";
+        const { node } = stateNode({ url: page.url(), state: `${kind}:${ov.name || c.name}`, signature: sig, kind, label: `${kind}: ${ov.name || c.name}` });
+        g.addEdge({ from: n.id, to: node.id, kind: "hover", element });
+        out.children.push(node.id);
+        out.outcome = "hover-overlay";
+      }
+      await page.mouse.move(0, 0);
+      await page.waitForTimeout(200);
+      await page.evaluate(clearMarks);
+      // What the hover opened may still be open: the click fires from the pre-state too.
+      const r = await ensure();
+      if (!r.ok) return out.children.length ? out : unfired(out, "state-not-restored");
+      before = r.pre.sig;
+    }
+
+    const mark = await begin(n, c);
+    const expandedBefore = c.expanded;
+    // A shared or rate-limited reference (a sandbox tenant other people use): space the clicks.
+    if (pace) await page.waitForTimeout(pace);
+    try {
+      await (await locate(page, c) ?? loc).click({ timeout: 4000 });
+    } catch (e) {
+      await page.evaluate(clearMarks).catch(() => {});
+      if (out.children.length) return { ...out, error: e.message.split("\n")[0] };
+      return unfired(out, "unclickable", { error: e.message.split("\n")[0] });
+    }
+    await settle(page, 2500);
+    // A click that lands on a sign-in page or a "session expired" notice: the login is gone.
+    await checkPage(page, { byName: c.name });
+    return observe(n, c, { kind: "click", element, before, urlBefore, rawBefore, mark, loc, expandedBefore, out });
+  }
+
+  /**
+   * Fire one interaction of another kind (interactions.mjs): restore the node's pre-state,
+   * act, observe. `change` reads a value whose change is a state even when the skeleton is the
+   * same (`{ read, label }`); `stateKey` names that state.
+   */
+  async function fireAs(n, ensure, kind, c, { element, change = null, stateKey } = {}) {
+    const out = { outcome: "inert", children: [] };
+    const pre = await ensure();
+    if (!pre.ok) return unfired(out, "state-not-restored");
+    const loc = await locateFor(page, kind, element, locate).catch(() => null);
+    if (!loc) return unfired(out, "not-found");
+    const urlBefore = g.canon(page.url());
+    const rawBefore = page.url();
+    const changeBefore = change ? await change.read().catch(() => null) : null;
+    const mark = await begin(n, c);
+    if (pace) await page.waitForTimeout(pace);
+    try {
+      await perform(page, kind, element, loc, locate);
+    } catch (e) {
+      await page.evaluate(clearMarks).catch(() => {});
+      return unfired(out, "unclickable", { error: e.message.split("\n")[0] });
+    }
+    await settle(page, 2500);
+    await checkPage(page, { byName: c.name ?? "" });
+    return observe(n, c, { kind, element, before: pre.pre.sig, urlBefore, rawBefore, mark, loc: kind === "click" ? loc : null, out, change, changeBefore, stateKey: stateKey ?? `${kind}:${c.role}:${c.name}` });
   }
 
   /**
@@ -712,6 +812,8 @@ export async function explore(g, dir, opts = {}) {
     const { scopeCss: fresh } = await reach(n);
     const scopeCss = fresh ?? n.info?.scope ?? null;
     const r = await page.evaluate(probe, { scopeCss });
+    // A placeholder (found bounded or unreachable) walked for real: read its skeleton now.
+    if (n.kind === "page" && n.signature?.length === 1 && ["bounded", "unreachable"].includes(n.signature[0])) g.reread(n.id, { signature: r.signature, modules: r.modules, label: r.heading || r.title || undefined });
     const bodies = (await Promise.all(net.bodies)).filter(Boolean);
     const frames = net.ws;
     net.bodies = null;
@@ -742,6 +844,22 @@ export async function explore(g, dir, opts = {}) {
     if (labelsAt) writeFileSync(join(art, "widths.json"), JSON.stringify(labelsAt));
     const wsReads = writeWs(art, frames);
     g.annotate(n.id, { title: r.title, heading: r.heading, interactive: r.candidates.length, artifacts: rel, scope: scopeCss, overflowX: r.overflowX, wsCalls: wsReads.length || undefined });
+    g.rescope(n.id);
+
+    // Outside the walk's scope (--scope, without --expand-out): recorded, not expanded. An entry
+    // page is always expanded: it is where the in-scope pages are found.
+    if (g.data.meta.walkScope && !g.inWalk(n) && !g.data.meta.walkScope.expandOut && !n.entry) {
+      const rows = r.candidates.map((c) => unfired({ role: c.role, name: c.name, css: c.css, href: c.href }, "shallow"));
+      writeFileSync(join(art, "inventory.json"), JSON.stringify({ id: n.id, url: n.url, state: n.state, kind: n.kind, title: r.title, requests, wsReads, candidates: rows, interactions: [], shallow: true, invariant: "ok" }, null, 1));
+      g.annotate(n.id, { shallow: true, candidateKeys: [] });
+      return rows;
+    }
+
+    // The Tab order (feeds verify's structure check), then the pre-state proven again.
+    const beforeFocus = await preState();
+    const focus = await focusOrder(page, scopeCss).catch(() => null);
+    if (focus) writeFileSync(join(art, "focus.json"), JSON.stringify(focus));
+    if (!samePre(beforeFocus, await preState())) await restore(n, beforeFocus);
 
     // A state or overlay re-exposes everything around it; only what is new to it is its own.
     const parentKeys = new Set();
@@ -749,6 +867,7 @@ export async function explore(g, dir, opts = {}) {
       const path = g.route(n.id) ?? [];
       const parent = path.length ? g.data.nodes[path[path.length - 1].from] : null;
       for (const k of parent?.info?.candidateKeys ?? []) parentKeys.add(k);
+      for (const k of parent?.info?.interactionKeys ?? []) parentKeys.add(k);
     }
     const keyOf = (c) => `${c.role}|${c.name}|${repeatGroup(c.css)}`;
     const groupSize = new Map();
@@ -764,7 +883,7 @@ export async function explore(g, dir, opts = {}) {
     // calendar of 594 controls took four minutes; the next sixteen added nothing new.
     const tmpl = g.data.templates[n.template];
     const seenKeys = new Set(tmpl.seenKeys ?? []);
-    const closedSiblings = tmpl.members.filter((id) => id !== n.id && ["closed", "built", "verified"].includes(g.data.nodes[id].status)).length;
+    const closedSiblings = tmpl.members.filter((id) => id !== n.id && ["closed", "built", "verified"].includes(g.data.nodes[id].status) && !g.data.nodes[id].info?.shallow).length;
     const templateSampled = closedSiblings >= TEMPLATE_SAMPLE;
     const normKey = (c) => `${c.role}|${c.name.replace(/\d+([.,]\d+)*/g, "#")}|${repeatGroup(c.css)}`;
     let skippedByTemplate = 0;
@@ -812,7 +931,7 @@ export async function explore(g, dir, opts = {}) {
 
       let res;
       try {
-        if (c.href && !c.href.startsWith("javascript:") && canonicalUrl(c.href) !== canonicalUrl(page.url())) {
+        if (c.href && !c.href.startsWith("javascript:") && g.canon(c.href) !== g.canon(page.url())) {
           const l = await readLink(n, c);
           g.addEdge({ from: n.id, to: l.node.id, kind: l.kind, element: l.element });
           res = { outcome: l.outcome, children: [l.node.id] };
@@ -850,14 +969,54 @@ export async function explore(g, dir, opts = {}) {
 
     const sampled = [...groups].filter(([grp, G]) => G.tried < groupSize.get(grp)).map(([grp, G]) => ({ group: grp, of: groupSize.get(grp), tried: G.tried }));
     tmpl.seenKeys = [...seenKeys];
-    g.annotate(n.id, { candidateKeys: r.candidates.map(keyOf), sampled: sampled.length ? sampled : undefined, templateSeen: skippedByTemplate || undefined });
-    const violations = nodeInvariant(r.candidates, outcomes);
+
+    // Every other interaction kind (interactions.mjs): right-click, double-click, keys, drags,
+    // forms, uploads. Each target ends as one row, like a click.
+    let inter = { rows: [], keys: [], forms: [], files: [], globalKeys: false };
+    if (interactions) {
+      const seenI = new Set(tmpl.seenInteractions ?? []);
+      inter = await runInteractions({
+        page, n, scopeCss, outcomes, inherited: parentKeys, seen: seenI, templateSampled, shortcuts, writesAllowed, risky, sample,
+        pending: (node, c, why, blocked, kind) => pending(node, c, why, blocked, kind),
+        fire: async (kind, c, o) => {
+          try {
+            return await fireAs(n, ensure, kind, c, o);
+          } catch (e) {
+            if (e instanceof SessionLost || BROWSER_GONE.test(e.message) || NETWORK_GONE.test(e.message)) throw e;
+            return unfired({ children: [] }, "error", { error: e.message.split("\n")[0] });
+          }
+        },
+        reset: async () => {
+          await reach(n, { fresh: true }).catch(() => {});
+        },
+      });
+      tmpl.seenInteractions = [...seenI];
+    }
+    g.annotate(n.id, { candidateKeys: r.candidates.map(keyOf), interactionKeys: inter.keys, sampled: sampled.length ? sampled : undefined, templateSeen: skippedByTemplate || undefined });
+    const violations = [...nodeInvariant(r.candidates, outcomes), ...interactionInvariant(inter.rows, knownUnfired)];
     const unfiredCount = outcomes.filter(isUnfired).length;
-    writeFileSync(join(art, "inventory.json"), JSON.stringify({ id: n.id, url: n.url, state: n.state, kind: n.kind, title: r.title, requests, wsReads, candidates: outcomes, invariant: violations.length ? violations : "ok" }, null, 1));
+    writeFileSync(join(art, "inventory.json"), JSON.stringify({ id: n.id, url: n.url, state: n.state, kind: n.kind, title: r.title, requests, wsReads, candidates: outcomes, interactions: inter.rows, forms: inter.forms, files: inter.files, globalKeys: inter.globalKeys, invariant: violations.length ? violations : "ok" }, null, 1));
     if (violations.length) throw new InvariantError(`invariant: ${violations.length} element(s) unaccounted: ${violations.slice(0, 3).join("; ")}`);
     g.annotate(n.id, { unfired: unfiredCount || undefined, notRestored: outcomes.filter((o) => o.unfired === "state-not-restored").length || undefined });
     return outcomes;
   }
+
+  // Entry pages seeded from a file (`--entries-from`): read, added as entries, walked first.
+  for (const url of entries) {
+    if (entryUrls().has(g.canon(url))) continue;
+    try {
+      await load(page, url);
+      const onLoad = await dismissOnLoad(page);
+      const r = await page.evaluate(probe, {});
+      const { node } = g.addNode({ url: page.url(), signature: r.signature, modules: r.modules, interactive: r.candidates.length, entry: true, label: r.heading || r.title || new URL(page.url()).pathname });
+      g.markEntry(node.id);
+      recordOnLoad(node, onLoad);
+    } catch (e) {
+      if (e instanceof SessionLost || BROWSER_GONE.test(e.message)) throw e;
+      log(`entry ${url} not read: ${e.message.split("\n")[0]}`);
+    }
+  }
+  save(g, dir);
 
   let done = 0;
   let netDown = 0;
@@ -935,9 +1094,39 @@ export async function explore(g, dir, opts = {}) {
   return { expanded: done, closed: g.isClosed(), ownOpen: onlyPrefix ? open : undefined };
 }
 
+/**
+ * Entry URLs from a file (`--entries-from`): one URL or path per line (`#` comments), or JSON: a
+ * list of URLs, paths or `{ url | href | path | route }` objects, or a route map object whose
+ * values (or keys) are paths. Paths resolve against `origin`.
+ */
+export function readEntriesFile(text, origin) {
+  const abs = (s) => {
+    try {
+      return new URL(String(s).trim(), origin).toString();
+    } catch {
+      return null;
+    }
+  };
+  let items;
+  try {
+    const doc = JSON.parse(text);
+    const pick = (x) => (typeof x === "string" ? x : x?.url ?? x?.href ?? x?.path ?? x?.route ?? null);
+    if (Array.isArray(doc)) items = doc.map(pick);
+    else if (doc && typeof doc === "object") {
+      const vals = Object.values(doc).flat().map(pick).filter((v) => typeof v === "string" && /^(\/|https?:)/.test(v));
+      items = vals.length ? vals : Object.keys(doc).filter((k) => k.startsWith("/"));
+    } else items = [];
+  } catch {
+    items = text.split("\n").map((l) => l.replace(/#(?!\/|!\/).*$/, "").trim());
+  }
+  return [...new Set(items.filter(Boolean).map(abs).filter(Boolean))];
+}
+
 /** Read one URL as an entry node (used by `run.mjs init` and `run.mjs visit`). */
 export async function readEntry(g, url, opts = {}) {
   const { context, close } = await openReference(opts);
+  // Which elements listen for a right-click, a double-click, a drag or keys (interactions.mjs).
+  await context.addInitScript({ content: LISTENER_HOOK });
   try {
     const page = context.pages()[0] ?? (await context.newPage());
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });

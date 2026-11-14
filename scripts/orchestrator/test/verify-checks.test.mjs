@@ -101,5 +101,5 @@ test("records: writeCheckRecord takes an output folder; a style skipped as 'ref 
   assert.ok(!nodeVerified(dir, node, "r1"), "the skipped style record keeps it unverified whatever the graph says");
   writeRecord(join(dir, "verify", "n1"), "style", { ran: true, count: 4, status: "pass" });
   assert.ok(nodeVerified(dir, node, "r1"));
-  assert.deepEqual(CHECKS, ["pixels", "structure", "style", "human_eye", "widths", "api", "writes"]);
+  assert.deepEqual(CHECKS, ["pixels", "structure", "style", "human_eye", "widths", "api", "interactions", "writes"]);
 });

@@ -37,6 +37,8 @@ const O = (args) =>
 
 async function walk(base) {
   const dir = mkdtempSync(join(tmpdir(), "seemly-verify-"));
+  const keyboards = join(dir, "keyboards.json");
+  writeFileSync(keyboards, JSON.stringify({ rl: "fixture", product: "fixture", shortcuts: [{ keys: "alt+m", action: "open the quick menu", implemented: true }] }));
   const profile = join(dir, "profile");
   const { open, save } = await import("../store.mjs");
   const { explore, readEntry } = await import("../explore.mjs");
@@ -44,12 +46,12 @@ async function walk(base) {
   Object.assign(g.data.meta, { target: `${base}/app/`, origin: base, prefix: "/app" });
   await readEntry(g, `${base}/app/`, { profile });
   save(g, dir);
-  const r = await explore(g, dir, { profile, maxNodes: 40, log: () => {} });
+  const r = await explore(g, dir, { profile, maxNodes: 60, keyboards, log: () => {} });
   assert.ok(r.closed, `walk of ${base} closed`);
   return { dir, g };
 }
 
-test("verify catches label, pixels, request, style, widths, ws read and a dead modal button; masks, writes, status and report", { skip: !hasPw && "playwright not resolvable from RL_REPO", timeout: 900_000 }, async () => {
+test("verify catches label, pixels, request, style, widths, ws read, a dead modal button and three interactions; masks, writes, status and report", { skip: !hasPw && "playwright not resolvable from RL_REPO", timeout: 900_000 }, async () => {
   const sites = await startPair();
   try {
     const ref = await walk(sites.ref.base);
@@ -57,7 +59,7 @@ test("verify catches label, pixels, request, style, widths, ws read and a dead m
     assert.deepEqual(sites.ref.state.writes, [], "the reference walk wrote nothing");
 
     const map = join(ref.dir, "scope.json");
-    writeFileSync(map, JSON.stringify({ rules: [{ scope: "S01", url: "^/app/$" }, { scope: "S02", url: "^/app/reports" }] }));
+    writeFileSync(map, JSON.stringify({ rules: [{ scope: "S01", url: "^/app/$" }, { scope: "S02", url: "^/app/reports" }, { scope: "S03", url: "^/app/shifts" }] }));
     for (const d of [ref.dir, clone.dir]) assert.equal((await O(["scope", "--dir", d, "--map", map])).code, 0);
 
     const cmp = await O(["compare", "--ref", ref.dir, "--clone", clone.dir]);
@@ -67,7 +69,8 @@ test("verify catches label, pixels, request, style, widths, ws read and a dead m
     const home = pairOf(/^\/app\/$/);
     const reports = pairOf(/^\/app\/reports$/);
     const modal = pairs.pairs.find((p) => p.kind === "modal" && /Filters/.test(p.ref.label));
-    assert.ok(home && reports && modal, `home, reports and the filters modal pair (${pairs.pairs.map((p) => p.ref.label).join(", ")})`);
+    const shifts = pairOf(/^\/app\/shifts$/);
+    assert.ok(home && reports && modal && shifts, `home, reports and the filters modal pair (${pairs.pairs.map((p) => p.ref.label).join(", ")})`);
     assert.ok(pairs.refOnly.some((p) => /example\.org/.test(p.ref.url) && /out of scope/.test(p.reason)), "the external link is ref-only with its reason");
 
     const masks = join(clone.dir, "masks.json");
@@ -129,7 +132,28 @@ test("verify catches label, pixels, request, style, widths, ws read and a dead m
 
     // the identical page passes everything, its write included
     const rv = cg.nodes[reports.clone.id].verify;
-    for (const c of ["pixels", "structure", "style", "human_eye", "widths", "api", "writes"]) assert.equal(rv[c].status, "pass", `${c}: ${rv[c].reason}`);
+    for (const c of ["pixels", "structure", "style", "human_eye", "widths", "api", "interactions", "writes"]) assert.equal(rv[c].status, "pass", `${c}: ${rv[c].reason}`);
+    const rint = JSON.parse(readFileSync(join(clone.dir, "verify", reports.clone.id, "interactions.detail.json"), "utf8"));
+    assert.ok(rint.compared >= 3, `the identical page's edges were compared (${rint.compared})`);
+    const rst = JSON.parse(readFileSync(join(clone.dir, "verify", reports.clone.id, "structure.detail.json"), "utf8"));
+    assert.ok(rst.focus.ref.length >= 3 && rst.focus.diff === null, "its Tab order was compared and matched");
+
+    // interactions: the ref walk recorded every kind on the shifts page, and verify caught the
+    // clone's three planted differences (and nothing else) edge by edge
+    const refShifts = JSON.parse(readFileSync(join(ref.dir, JSON.parse(readFileSync(join(ref.dir, "graph.json"), "utf8")).nodes[shifts.ref.id].info.artifacts, "inventory.json"), "utf8"));
+    const kinds = new Set(refShifts.interactions.map((r) => r.kind));
+    for (const k of ["contextmenu", "dblclick", "key", "drag", "input", "submit", "upload"]) assert.ok(kinds.has(k), `the ref walk recorded ${k}`);
+    const sv = cg.nodes[shifts.clone.id].verify;
+    assert.equal(sv.interactions.status, "fail");
+    const sint = JSON.parse(readFileSync(join(clone.dir, "verify", shifts.clone.id, "interactions.detail.json"), "utf8"));
+    const msgs = sint.failures.map((f) => f.message);
+    assert.ok(msgs.includes(`right-click on 'Shift 7:00 AM-3:30 PM' opens nothing on the clone (the reference opens "modal: Shift glance")`), msgs.join("\n"));
+    assert.ok(msgs.includes(`key alt+m opens nothing on the clone (the reference opens "menu: Quick menu")`), msgs.join("\n"));
+    assert.ok(msgs.some((m) => /^submit on 'Request shift' \[empty\] opens nothing on the clone/.test(m)), msgs.join("\n"));
+    for (const m of msgs) assert.match(m, /Shift 7:00|alt\+m|'Request shift'/, `every failure comes from a planted difference: ${m}`);
+    for (const k of ["dblclick|", "drag|", "input||valid", "upload|"]) assert.ok(!sint.failures.some((f) => f.key.startsWith(k)), `${k} matched`);
+    assert.ok(!msgs.some((m) => /invalid:Badge/.test(m)), "the pattern message matches");
+    for (const c of ["pixels", "style"]) assert.equal(sv[c].status, "pass", `shifts ${c} at rest is identical: ${sv[c].reason}`);
     const rapi = JSON.parse(readFileSync(join(clone.dir, "verify", reports.clone.id, "api.detail.json"), "utf8"));
     assert.deepEqual(rapi.refWs, ["/notes/count"], "the identical page's socket read was compared, and its mirror matched");
     assert.equal(rv.passed, true);
@@ -153,15 +177,18 @@ test("verify catches label, pixels, request, style, widths, ws read and a dead m
 
     // status and report count from the graph plus the records
     const st = await O(["status", "--dir", clone.dir]);
-    assert.match(st.out, /VERIFY\s+verified 1 \/ built 3 \/ ref-only \d+/);
+    assert.match(st.out, /VERIFY\s+verified 5 \/ built 8 \/ ref-only \d+/);
     const s2 = await O(["status", "--dir", clone.dir, "--scope", "S02"]);
     assert.match(s2.out, /VERIFY\s+verified 1 \/ built 1 \/ ref-only 0/);
+    const s3 = await O(["status", "--dir", clone.dir, "--scope", "S03"]);
+    assert.match(s3.out, /VERIFY\s+verified 4 \/ built 5/, "the shifts page fails on its interactions; its matching states verify");
     const s1 = await O(["status", "--dir", clone.dir, "--scope", "S01"]);
     assert.match(s1.out, /VERIFY\s+verified 0 \/ built 2/);
     const rp = await O(["report", "--clone", clone.dir, "--scope", "S01"]);
     assert.equal(rp.code, 0, rp.out);
     const md = readFileSync(join(clone.dir, "verify", "report-S01.md"), "utf8");
-    assert.match(md, /\| \*\*FAIL\*\* \| \*\*FAIL\*\* \| \*\*FAIL\*\* \| pass \| \*\*FAIL\*\* \| \*\*FAIL\*\* \| n\/a \| no \|/);
+    assert.match(md, /\| \*\*FAIL\*\* \| \*\*FAIL\*\* \| \*\*FAIL\*\* \| pass \| \*\*FAIL\*\* \| \*\*FAIL\*\* \| \*\*FAIL\*\* \| n\/a \| no \|/);
+    assert.match(md, /\| interactions \| writes \|/);
     assert.match(md, /Open filters/);
 
     // one node, by id: only that pair runs
