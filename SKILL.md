@@ -204,6 +204,10 @@ AX and oracle capture of every step behind it runs first: the write may be possi
 
 ## 4. Phase B: walk the surface graph (the orchestrator walks; you rule)
 
+**Always run the closed loop in `reference/graph.md` ("The closed loop")**: walk the reference to
+CLOSED, build from the graph (never a hand checklist), walk the clone, `compare`, fix, re-walk,
+until the diff is empty. It is what "use seemly" means; the human never has to ask for it.
+
 **Time-boxed reference (a sandbox, a trial, a training tenant):** follow `reference/sandbox.md`.
 It orders this phase so connected time goes only to capture: a pilot to tune the walker
 (`--read-posts auto`, `--pace`, `--relogin-wait`), a read walk per role, people-driven write

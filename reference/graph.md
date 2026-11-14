@@ -204,3 +204,34 @@ compounds because every node's verification feeds `LESSONS.md`, every lesson bec
 check, and every check runs on every node after it. The 40th node is cheaper and more
 accurate than the 4th, or the rounds trend in the post-node block says so and the run
 stops to write the lesson.
+
+## The closed loop: what "use seemly" always means (mandatory, never needs asking)
+
+Asked to build a scope (a component, a flow set, a whole app) with seemly, the run is this
+loop, start to finish, every time. The human should never have to restate it.
+
+1. **Walk the reference to CLOSED.** `O explore` until frontier 0. The priority queue with
+   cheapest-route replay (Dijkstra) *is* "go deep, backtrack, go deep again", done
+   optimally. Plain DFS backtracking in a browser has to replay the whole path for every
+   backtrack, and it revisits shared surfaces. The queue reaches each node exactly once, by
+   its shortest route, and dedupe by node id and template stops any surface being walked
+   twice. Typed input, drag, uploads and states behind a write are explored by hand and fed
+   back with `O requeue` / `O gap`, so the walker's blind spots become nodes too.
+2. **The work list is the graph, never a hand checklist.** Every item on a gap list or
+   checklist maps to a node id, or becomes one: add it as an entry and walk it. Building runs
+   off `O plan` / `next-unit`. Each unit agent gets its node packet and runs the full per-node
+   sequence above: capture, inventory, expand, build or configure, verify on four channels,
+   record. A checklist line with no node behind it is the defect this rule exists to stop.
+3. **Walk the clone to CLOSED** on an isolated copy (own DB copy, own ports), with writes
+   allowed.
+4. **Diff the two graphs:** `O compare --ref <ref> --clone <clone>`. Confirm every line by
+   hand. Each confirmed line is fixed, and its node goes back on the queue.
+5. **Repeat steps 3 and 4 until compare has no unconfirmed line.** By then every reference
+   node must be built, configured, or closed as GAP / bounded / blocked, with its reason on
+   the node.
+6. **Login or environment lost mid-loop** (`explore` exits 3, tabs on a sign-in page): stop
+   capturing and print `BLOCKED`. Work may continue from existing captures, but every node
+   that needed a new capture is marked `needs-capture`, never counted as covered. The loop
+   resumes at step 1 for those nodes after re-login (`export-login.mjs`).
+7. **Every count reported** (nodes, closed, built, gaps) comes from `graph.json`, never from
+   a checklist tally.
