@@ -68,6 +68,9 @@ uv run $V/dedupe_frames.py meta <slug> --rank <rank> --mask-top <chrome>   # per
 uv run $V/dedupe_frames.py dedupe --ocr                # layered dedupe + chrome and PII blackout
 uv run $V/dedupe_frames.py report                      # counts per video and per layer
 ```
+Live view: `dedupe` and `states` write events to `$VR/frames_raw/_live/events.jsonl`; run
+`node <seemly>/scripts/orchestrator/run.mjs watch --dir $VR/frames_raw/_live` in the background and
+give the human `http://127.0.0.1:4777/` to watch recordings, screens and states form as a tree.
 `extract_frames.sh` refuses a video the disk cannot hold (raw frames run about 30x the
 video's size), and stops (`BLOCKED`) if its scene frames and scene scores ever differ in number.
 Masking covers pii.json terms and, unlisted, people by shape: the value beside or under a person

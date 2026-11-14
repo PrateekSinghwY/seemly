@@ -15,7 +15,9 @@ export function open(dir, meta = {}) {
   const p = paths(dir);
   mkdirSync(dir, { recursive: true });
   const g = existsSync(p.graph) ? new Graph(JSON.parse(readFileSync(p.graph, "utf8"))) : Graph.create(meta);
-  g.on((ev) => appendFileSync(p.events, JSON.stringify(ev) + "\n"));
+  // Every event names the process that wrote it, so the live view can follow each agent:
+  // SEEMLY_AGENT (run.mjs sets it from --agent or the walker's area), else the pid.
+  g.on((ev) => appendFileSync(p.events, JSON.stringify({ ...ev, agent: process.env.SEEMLY_AGENT || `pid-${process.pid}` }) + "\n"));
   return g;
 }
 

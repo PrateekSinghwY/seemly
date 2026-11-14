@@ -244,6 +244,11 @@ export class Graph {
     return () => (this.listeners = this.listeners.filter((f) => f !== fn));
   }
 
+  /** An activity event (where a walker or builder is, what blocked it) for the live view; it changes nothing. */
+  signal(type, payload = {}) {
+    this.#emit(type, payload);
+  }
+
   #emit(type, payload) {
     const ev = { at: new Date().toISOString(), type, ...payload };
     for (const f of this.listeners) f(ev);

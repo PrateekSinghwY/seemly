@@ -252,6 +252,7 @@ export async function explore(g, dir, opts = {}) {
     const row = { kind, detail, node: current.node, element: current.element };
     net.failures.push(row);
     appendFileSync(errorsPath, JSON.stringify(row) + "\n");
+    g.signal("walker.error", { node: current.node, element: current.element, kind, detail: String(detail ?? "").slice(0, 300) });
   };
   await context.route("**/*", (route) => {
     const req = route.request();
@@ -589,6 +590,7 @@ export async function explore(g, dir, opts = {}) {
   async function begin(n, c) {
     await page.evaluate(markFloating, FLOATING_SEL);
     current = { node: n.id, element: `${c.role} "${String(c.name ?? "").slice(0, 60)}"` };
+    g.signal("walker.at", { node: n.id, element: current.element });
     return { blocked: net.blocked.length, reads: net.reads, popups: net.popups.length, dialogs: net.dialogs.length, downloads: net.downloads.length, failures: net.failures.length };
   }
 
@@ -829,6 +831,7 @@ export async function explore(g, dir, opts = {}) {
     net.bodies = [];
     net.ws = [];
     current = { node: n.id, element: "(load)" };
+    g.signal("walker.at", { node: n.id, element: "(load)" });
     const { scopeCss: fresh } = await reach(n);
     const scopeCss = fresh ?? n.info?.scope ?? null;
     const r = await page.evaluate(probe, { scopeCss });
@@ -1042,6 +1045,7 @@ export async function explore(g, dir, opts = {}) {
 
   let done = 0;
   let netDown = 0;
+  g.signal("walker.start", { area: onlyPrefix, frontier: g.frontier.size });
   let stopping = false;
   const stop = () => (stopping = true);
   process.once("SIGINT", stop);
@@ -1071,6 +1075,7 @@ export async function explore(g, dir, opts = {}) {
         log(`closed ${n.id} ${n.kind.padEnd(6)} ${n.label.slice(0, 60)}  elements ${outs.length}, opened ${opened}, ${((Date.now() - t) / 1000).toFixed(1)}s  frontier ${g.frontier.size}`);
       } catch (e) {
         if (e instanceof SessionLost) {
+          g.signal("walker.blocked", { node: n.id, reason: `login lost: ${e.message.split("\n")[0]}` });
           g.setStatus(n.id, "frontier");
           save(g, dir);
           throw e;
@@ -1084,6 +1089,7 @@ export async function explore(g, dir, opts = {}) {
           g.setStatus(n.id, "frontier");
           netDown++;
           log(`network down (${netDown}); ${n.id} back on the frontier, waiting 30 s`);
+          g.signal("walker.blocked", { node: n.id, reason: `network down (${netDown}), retrying in 30 s` });
           if (netDown >= 20) {
             log("stopped: network down for ten minutes");
             break;
@@ -1100,11 +1106,13 @@ export async function explore(g, dir, opts = {}) {
         if (e instanceof TransientError || n.attempts >= 2) markGap(g, n.id, reason, e.message);
         else g.setStatus(n.id, "frontier");
         log(`failed ${n.id} ${n.label.slice(0, 60)} [${reason.code}]: ${e.message.split("\n")[0]}`);
+        g.signal("walker.error", { node: n.id, element: current.element, kind: reason.code, detail: e.message.split("\n")[0].slice(0, 300) });
       }
       save(g, dir);
       done++;
     }
   } finally {
+    g.signal("walker.done", { stopped: stopping, frontier: g.frontier.size });
     for (const id of deferred) g.setStatus(id, "frontier");
     save(g, dir);
     // Attached over CDP the browser is the human's: leave it as it was found.

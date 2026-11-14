@@ -22,6 +22,7 @@
 //     next-unit                                                    claim the next unit, write its packet
 //     packet <unit>                                                rewrite one unit's packet
 //     unit-done <unit> [--verified]
+//     unit-blocked <unit> --reason "..."                           a builder says it is stuck (shown red in watch)
 //   verify phase (Phase D)
 //     verify --ref <dir>... --clone <dir> [--scope id] [--node id] [--masks masks.json] [--writes writes.json]
 //            [--styles-allow styles-allow.json] [--ws-map ws-map.json] [--dead-controls]
@@ -29,8 +30,9 @@
 //     report [--clone <dir>] [--scope id] [--out report.md]        ref node -> clone node -> each check -> reason
 //   views
 //     status [--scope id] [--clone <dir>] | tree [--scope id] | live | frontier | route <nodeId> | loops
+//     watch [--port 4777] [--dir d]...                             live tree in the browser: nodes, agents, blockers, replay
 //     compare --ref <dir>... --clone <dir>... [--scope id] [--out diff.md]   walk diff; writes <clone>/pairs.json
-//   (any) --dir <discovery dir>   --cdp <http://127.0.0.1:9222>   --headed
+//   (any) --dir <discovery dir>   --cdp <http://127.0.0.1:9222>   --headed   --agent <name> (who the live view shows)
 
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -71,6 +73,9 @@ const { values: o, positionals } = parseArgs({
     "allow-open": { type: "boolean", default: false },
     failed: { type: "boolean", default: false },
     "only-prefix": { type: "string", multiple: true },
+    agent: { type: "string" },
+    reason: { type: "string" },
+    port: { type: "string" },
     ref: { type: "string", multiple: true },
     clone: { type: "string", multiple: true },
     out: { type: "string" },
@@ -189,6 +194,14 @@ if (WALKS.has(cmd)) walker = await import("./explore.mjs");
 else if (cmd === "requeue") walker = await import("./explore.mjs").catch((e) => (say(`note: explore.mjs did not load (${e.message.split("\n")[0]}); using the graph's retry rule`), {}));
 const { SessionLost, explore, readEntry } = walker;
 
+// The watch view reads files only: it needs no graph, no walker, no browser.
+if (cmd === "watch") {
+  const { serve } = await import("./watch.mjs");
+  await serve({ dirs: [...new Set([dir, ...positionals])], port: o.port ? +o.port : 4777, say });
+  await new Promise(() => {});
+}
+// Who the live view shows for this process: --agent, else the walker's area, else the command.
+process.env.SEEMLY_AGENT ||= o.agent ?? (cmd === "explore" ? `walker${o["only-prefix"]?.length ? ` ${o["only-prefix"].join(",")}` : ""}` : `${cmd}-${process.pid}`);
 const g = open(dir, {});
 switch (cmd) {
   case "init": {
@@ -249,6 +262,7 @@ switch (cmd) {
         }
         const before = statSync(stateFile).mtimeMs;
         say(`LOGIN LOST: ${e.message}. Log in again in the headed window and re-run export-login to ${stateFile}; waiting up to ${waitMin} min.`);
+        g.signal("walker.blocked", { reason: `login lost: waiting up to ${waitMin} min for a new login` });
         const deadline = Date.now() + waitMin * 60_000;
         while (Date.now() < deadline && statSync(stateFile).mtimeMs === before) await new Promise((r) => setTimeout(r, 5000));
         if (statSync(stateFile).mtimeMs === before) {
@@ -257,6 +271,7 @@ switch (cmd) {
           break;
         }
         say("login refreshed; resuming the walk");
+        g.signal("walker.resumed", { reason: "login refreshed" });
       }
     }
     break;
@@ -319,6 +334,7 @@ switch (cmd) {
       say(Object.values(st.units).every((u) => u.status === "built" || u.status === "verified") ? "ALL UNITS BUILT" : "nothing ready: a unit is waiting on one still building");
       break;
     }
+    g.signal("unit.claimed", { unit: unit.id, kind: unit.kind, members: unit.members });
     const pend = pendingRows().filter((p) => unit.members.includes(p.node));
     const p = writePacket(dir, unit.id, packet(g, st, unit.id, { lessons: await lessonsFor(unit.kind), pending: pend, skill }));
     say(`${unit.id} (${unit.kind}) -> ${p}`);
@@ -334,10 +350,20 @@ switch (cmd) {
   case "unit-done": {
     const st = loadState(dir);
     const unit = finish(g, st, positionals[0], { verified: o.verified });
+    g.signal("unit.done", { unit: unit.id, status: unit.status, members: unit.members });
     saveState(dir, st);
     save(g, dir);
     writeLive(g, dir);
     say(`${unit.id} ${unit.status}; ${UNITS(progress(st))}`);
+    break;
+  }
+  case "unit-blocked": {
+    const st = loadState(dir);
+    const unit = st.units[positionals[0]];
+    if (!unit) throw new Error(`unknown unit ${positionals[0]}`);
+    if (!o.reason) throw new Error("unit-blocked needs --reason");
+    g.signal("unit.blocked", { unit: unit.id, kind: unit.kind, members: unit.members, reason: o.reason });
+    say(`${unit.id} marked blocked: ${o.reason}`);
     break;
   }
   case "compare": {

@@ -66,6 +66,7 @@ from skimage.measure import regionprops
 from skimage.metrics import structural_similarity
 
 import video_events
+import video_live
 import video_paths
 import video_privacy
 import video_speech
@@ -543,7 +544,13 @@ def cmd_dedupe(args, p: Params) -> None:
             remask_pruned(slug, manifest)
             save_manifest(manifest)
             continue
-        s = dedupe_video(slug, p, manifest)
+        video_live.video_started(slug)
+        try:
+            s = dedupe_video(slug, p, manifest)
+        except Exception as e:
+            video_live.video_failed(slug, e)
+            raise
+        video_live.video_done(slug, s)
         video_speech.frame_speech(
             RAW_DIR / slug, [f for f in manifest["frames"] if f["video"] == slug]
         )
@@ -715,6 +722,7 @@ def cmd_states(_args) -> None:
     reused = video_states.seen_pass(frames, SEEN_PATH, CURATED_DIR)
     rank = {k: v.get("source_rank") or "" for k, v in manifest["videos"].items()}
     states, report = video_states.states_pass(frames, rank)
+    video_live.states(states)
     save_manifest(manifest)
     STATES.write_text(
         json.dumps({"version": 1, "report": report, "states": states}, indent=2) + "\n"
@@ -827,6 +835,8 @@ def main() -> None:
     )
 
     args = ap.parse_args()
+    if args.cmd in ("dedupe", "states"):
+        video_live.init(RAW_DIR)  # run.mjs watch --dir <frames_raw>/_live
     handlers = {
         "events": cmd_events,
         "transcribe": cmd_transcribe,

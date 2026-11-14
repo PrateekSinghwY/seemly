@@ -281,7 +281,16 @@ for STATUS, PAGE COMPLETE and the scorecard. `O` below is
 O init --target <url> [--prefix /path] [--entry <url>]...   # entry pages, read in the persistent profile
 O explore --max-nodes 40                                      # one chunk; repeat until it prints CLOSED
 O status    O tree    O live    O pending    O route <node>   # STATUS, tree.md, graph.html, writes waiting
+O watch [--port 4777] [<more discovery dirs>]                 # live tree in the browser (below)
 ```
+
+**Watch it live.** Start `O watch` with `run_in_background` at the start of every walk or build
+and give the human `http://127.0.0.1:4777/`. It streams `discovery/events.jsonl` into a tree that
+grows as nodes are found: each agent's marker on the node it is on, the element it is firing,
+its route from the entry in its colour, and a red marker plus a Blockers row the moment an agent
+errors, loses its login, or goes 90 s silent. A finished run opens as a replay with a scrubber.
+Name every process: `--agent "walker /area"` on each parallel `explore`, `--agent builder-N` on
+`next-unit` / `unit-done` / `unit-blocked` from each builder, so the view shows who is where.
 
 Run `explore` with `run_in_background` and keep building while it walks; each chunk saves the
 graph, so a crash or a checkpoint loses nothing. How to run it well, learned on a full audit:
@@ -427,6 +436,7 @@ without one (a human ruling, an irreversible or paid lane, a blocked third party
 O plan                 # refuses while the graph is open; units: shell, module archetypes, templates
 O next-unit            # claims the next unit whose deps are built, writes discovery/packets/<unit>.md
 O unit-done <unit> [--verified]
+O unit-blocked <unit> --reason "..."   # a builder that cannot finish says so; red in O watch
 ```
 
 The packet is the whole brief for one unit: the members (one component, every other member is

@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Seemly live</title>
+<style>
+:root{
+  --bg:#f7f6f2;--panel:#ffffff;--fg:#1d1d1b;--muted:#6b6a65;--line:#dedbd3;--link:#cfccc4;
+  --frontier:#9a9790;--expanding:#d08a10;--closed:#2f6fb3;--built:#2f9e5b;--verified:#17713d;--bounded:#b8761a;--gap:#c0392b;
+  --blocked:#d62f22;--focus:#2f6fb3;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#141412;--panel:#1d1d1a;--fg:#ecebe6;--muted:#a3a29b;--line:#34332f;--link:#3e3d38;
+  --frontier:#8a8880;--expanding:#f0a72a;--closed:#5b9be0;--built:#4fc07d;--verified:#7fe0a5;--bounded:#e09a3a;--gap:#ef5b4b;
+  --blocked:#ff5a4d;--focus:#7fb4f0;
+}}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:13px/1.4 system-ui,-apple-system,sans-serif}
+header{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--line);background:var(--panel)}
+header h1{font-size:15px;margin:0 6px 0 0}
+header label{display:flex;gap:6px;align-items:center;color:var(--muted)}
+select,button,input[type=range]{font:inherit;color:inherit}
+select,button{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:3px 8px;cursor:pointer}
+button[aria-pressed=true]{background:var(--fg);color:var(--bg)}
+button:focus-visible,select:focus-visible,input:focus-visible,.row:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+#scrub{width:min(320px,40vw)}
+#clock{font-variant-numeric:tabular-nums;color:var(--muted);min-width:150px}
+.stats{display:flex;gap:12px;flex-wrap:wrap;color:var(--muted);margin-left:auto}
+.stats b{color:var(--fg);font-variant-numeric:tabular-nums}
+#live-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--frontier);margin-right:4px}
+#live-dot.on{background:var(--blocked);animation:blink 1.2s infinite}
+main{position:absolute;top:var(--hh,49px);left:0;right:0;bottom:0;display:grid;grid-template-columns:1fr 340px}
+#stage{position:relative;overflow:hidden}
+svg{width:100%;height:100%;display:block;cursor:grab}
+svg:active{cursor:grabbing}
+aside{border-left:1px solid var(--line);background:var(--panel);overflow:auto;padding:10px 12px}
+aside h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:14px 0 6px}
+aside h2:first-child{margin-top:2px}
+.row{display:block;width:100%;text-align:left;border:1px solid var(--line);border-radius:8px;padding:7px 9px;margin:0 0 6px;background:var(--bg);cursor:pointer}
+.row .top{display:flex;gap:6px;align-items:center}
+.dot{width:10px;height:10px;border-radius:50%;flex:none}
+.badge{font-size:11px;border-radius:10px;padding:0 7px;margin-left:auto;border:1px solid currentColor}
+.badge.walking{color:var(--closed)}.badge.building{color:var(--built)}.badge.done,.badge.idle{color:var(--muted)}
+.badge.blocked,.badge.stalled{color:var(--blocked);font-weight:600}
+.sub{color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row.bad{border-color:var(--blocked)}
+.feed{font-size:12px;color:var(--muted);list-style:none;padding:0;margin:0}
+.feed li{padding:2px 0;border-bottom:1px dashed var(--line);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.feed li.err{color:var(--blocked)}
+.legend{display:flex;flex-wrap:wrap;gap:4px 10px;color:var(--muted);font-size:12px}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:4px;vertical-align:-1px}
+dl{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;margin:0;font-size:12px}
+dt{color:var(--muted)}dd{margin:0;word-break:break-all}
+.empty{color:var(--muted);font-size:12px}
+/* tree */
+.link{fill:none;stroke:var(--link);stroke-width:1}
+.link.trail{stroke-width:2.6}
+.node path.n{stroke-width:1.6}
+.node text{font-size:10.5px;fill:var(--fg);paint-order:stroke;stroke:var(--bg);stroke-width:3px;pointer-events:none}
+.node.sel path.n{stroke:var(--focus);stroke-width:3}
+svg.far .node text{display:none}
+svg.far .node.hot text{display:block}
+.node.expanding path.n{animation:pulse 1s infinite}
+.node.err path.n{stroke:var(--blocked);stroke-width:2.4}
+.ring{fill:none;stroke-width:2.5}
+.ring.blocked{stroke:var(--blocked)!important;stroke-dasharray:4 3;animation:spin 2s linear infinite}
+.tag rect{rx:9;ry:9}
+.tag text{font-size:10.5px;font-weight:600;fill:#fff;stroke:none}
+.extra{font-size:9px;fill:var(--muted)}
+@keyframes pulse{50%{opacity:.35}}
+@keyframes blink{50%{opacity:.2}}
+@keyframes spin{to{stroke-dashoffset:-14}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+@media (max-width:820px){main{grid-template-columns:1fr;grid-template-rows:60% 40%}aside{border-left:0;border-top:1px solid var(--line)}}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+</style>
+</head>
+<body>
+<header id="hdr">
+  <h1>Seemly live</h1>
+  <label>Run <select id="run" aria-label="Discovery run"></select></label>
+  <button id="mode-live" aria-pressed="true" title="Show events the moment they are written"><span id="live-dot"></span>Live</button>
+  <button id="mode-replay" aria-pressed="false" title="Replay the run from the first event">Replay</button>
+  <button id="play" aria-label="Pause replay">Pause</button>
+  <label>Speed <select id="speed" aria-label="Replay speed"><option value="1">1×</option><option value="4">4×</option><option value="16" selected>16×</option><option value="64">64×</option><option value="256">256×</option></select></label>
+  <input id="scrub" type="range" min="0" max="1000" value="1000" aria-label="Replay position">
+  <span id="clock" aria-live="off"></span>
+  <label><input id="follow" type="checkbox" checked> Follow agent</label>
+  <button id="fit">Fit</button>
+  <div class="stats" aria-label="Graph counts">
+    <span>nodes <b id="s-nodes">0</b></span><span>edges <b id="s-edges">0</b></span><span>templates <b id="s-tpl">0</b></span>
+    <span>frontier <b id="s-front">0</b></span><span>closed <b id="s-closed">0</b></span><span>built <b id="s-built">0</b></span><span>gap <b id="s-gap">0</b></span>
+  </div>
+</header>
+<main>
+  <div id="stage"><svg id="svg" role="img" aria-label="Live tree of every surface the walk has found, with each agent's position"><g id="vp"><g id="links"></g><g id="nodes"></g><g id="agents"></g></g></svg></div>
+  <aside>
+    <h2>Agents</h2><div id="agents-list"><p class="empty">No agent activity yet.</p></div>
+    <h2>Blockers</h2><div id="blockers"><p class="empty">Nothing blocked.</p></div>
+    <h2>Selected node</h2><div id="detail"><p class="empty">Click a node, an agent or a blocker.</p></div>
+    <h2>Legend</h2>
+    <div class="legend">
+      <span><i style="border:1.6px solid var(--frontier)"></i>found, not explored</span><span><i style="background:var(--expanding)"></i>exploring now</span>
+      <span><i style="background:var(--closed)"></i>explored</span><span><i style="background:var(--built)"></i>built</span><span><i style="background:var(--verified)"></i>verified</span>
+      <span><i style="background:var(--bounded)"></i>bounded</span><span><i style="background:var(--gap)"></i>gap</span><span><i style="border:2px dashed var(--blocked)"></i>agent blocked</span>
+      <span>● page ◆ modal ▲ menu ■ overlay ★ state · coloured line = the agent's route from start</span>
+    </div>
+    <h2>Activity</h2><ul class="feed" id="feed"></ul>
+  </aside>
+</main>
+<div class="sr" aria-live="assertive" id="announce"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const STALL_MS = 90_000;      // an agent silent this long while not done is shown stalled
+const IDLE_CAP = 4_000;       // replay squeezes any quiet gap longer than this down to it
+const AGENT_COLORS = ["#7c4dff","#00a3a3","#e8590c","#d6336c","#2b8a3e","#1c7ed6","#ae3ec9","#5c940d","#c2255c","#0b7285"];
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const SHAPES = { page: d3.symbolCircle, modal: d3.symbolDiamond, menu: d3.symbolTriangle, overlay: d3.symbolSquare, state: d3.symbolStar, tooltip: d3.symbolWye };
+
+let runs = [], es = null, log = [], vt = [], caught = false;
+let live = true, playing = true, cursor = 0, simV = 0, lastFrame = 0;
+let M, selected = null, dirty = true, lastLayout = 0;
+const colorOf = new Map();
+const agentColor = (name) => { if (!colorOf.has(name)) colorOf.set(name, AGENT_COLORS[colorOf.size % AGENT_COLORS.length]); return colorOf.get(name); };
+
+function reset() {
+  M = { nodes: new Map(), agents: new Map(), blockers: [], feed: [], edges: 0, templates: 0, now: 0 };
+  M.nodes.set("__root", { id: "__root", label: "start", kind: "root", status: "closed", children: [], parent: null });
+  cursor = 0; dirty = true;
+}
+reset();
+
+const nodeLabel = (id) => M.nodes.get(id)?.label ?? id;
+function feed(text, cls = "") { M.feed.unshift({ text, cls }); if (M.feed.length > 80) M.feed.length = 80; }
+function agent(name) {
+  if (!M.agents.has(name)) M.agents.set(name, { name, state: "idle", node: null, element: "", reason: "", lastAt: 0, unit: null, steps: 0, errors: 0 });
+  return M.agents.get(name);
+}
+function attach(n, parentId) {
+  const p = M.nodes.get(parentId);
+  if (!p) return false;
+  n.parent = parentId; p.children.push(n.id); return true;
+}
+
+function apply(ev, i) {
+  const t = ev.t, who = ev.agent ?? "walker";
+  M.now = t;
+  switch (ev.type) {
+    case "node.added": {
+      const d = ev.node;
+      const old = M.nodes.get(d.id);
+      // The same node announced again (a rerun of a stage): update it in place, keep its branch.
+      if (old) { Object.assign(old, { label: d.label || old.label, status: d.status || old.status, kind: d.kind ?? old.kind }); break; }
+      const n = { id: d.id, label: d.label || d.id, kind: d.kind, status: d.status || "frontier", template: d.template, url: d.url, depth: d.depth, entry: d.entry, children: [], parent: null, extra: 0, errors: [], foundAt: t, foundBy: who };
+      M.nodes.set(n.id, n);
+      M.newest = n.id;
+      if (d.entry) attach(n, "__root");
+      break;
+    }
+    case "edge.added": {
+      M.edges++;
+      const e = ev.edge, to = M.nodes.get(e.to);
+      if (!to || e.from === e.to) break;
+      if (to.parent === null && M.nodes.has(e.from)) { attach(to, e.from); to.via = `${e.kind} ${e.element?.role ?? ""} "${(e.element?.name ?? "").slice(0, 50)}"`; feed(`+ ${to.kind} “${to.label}” under “${nodeLabel(e.from)}”`); }
+      else if (to.parent !== e.from) to.extra++;
+      break;
+    }
+    case "template.added": M.templates++; break;
+    case "node.status": {
+      const n = M.nodes.get(ev.id); if (!n) break;
+      n.status = ev.to;
+      if (ev.to === "expanding") { const a = agent(who); a.node = ev.id; a.state = "walking"; a.element = "(load)"; a.reason = ""; a.lastAt = t; a.steps++; feed(`${who} → “${n.label}”`); }
+      if (ev.to === "closed") feed(`✓ explored “${n.label}”`);
+      if (ev.to === "gap") { feed(`✗ gap “${n.label}”${ev.detail ? `: ${ev.detail}` : ""}`, "err"); M.blockers.unshift({ kind: "gap", agent: who, node: ev.id, text: ev.detail || "explore failed", t }); }
+      break;
+    }
+    case "walker.start": { const a = agent(who); a.state = "walking"; a.lastAt = t; feed(`${who} started${ev.area ? ` on ${ev.area}` : ""}`); break; }
+    case "walker.at": { const a = agent(who); a.node = ev.node; a.element = ev.element; a.state = "walking"; a.reason = ""; a.lastAt = t; break; }
+    case "walker.error": {
+      const a = agent(who); a.lastAt = t; a.errors++;
+      const n = M.nodes.get(ev.node); if (n) n.errors.push(`${ev.kind}: ${ev.detail}`);
+      M.blockers.unshift({ kind: "error", agent: who, node: ev.node, text: `${ev.kind}: ${ev.detail}`, element: ev.element, t });
+      feed(`! ${who} on “${nodeLabel(ev.node)}”: ${ev.kind}`, "err");
+      break;
+    }
+    case "walker.blocked": {
+      const a = agent(who); a.state = "blocked"; a.reason = ev.reason; a.lastAt = t; if (ev.node) a.node = ev.node;
+      M.blockers.unshift({ kind: "blocked", agent: who, node: a.node, text: ev.reason, t });
+      feed(`■ ${who} BLOCKED: ${ev.reason}`, "err");
+      if (caught && live) $("announce").textContent = `${who} blocked: ${ev.reason}`;
+      break;
+    }
+    case "walker.resumed": { const a = agent(who); a.state = "walking"; a.reason = ""; a.lastAt = t; feed(`${who} resumed`); break; }
+    case "walker.done": { const a = agent(who); a.state = "done"; a.lastAt = t; a.element = ""; feed(`${who} finished; frontier ${ev.frontier}`); break; }
+    case "unit.claimed": { const a = agent(who); a.state = "building"; a.unit = ev.unit; a.node = ev.members?.[0] ?? a.node; a.element = `unit ${ev.unit} (${ev.kind})`; a.reason = ""; a.lastAt = t; feed(`${who} claimed ${ev.unit}`); break; }
+    case "unit.done": { const a = agent(who); a.state = "idle"; a.element = `${ev.unit} ${ev.status}`; a.lastAt = t; feed(`✓ ${ev.unit} ${ev.status}`); break; }
+    case "unit.blocked": {
+      const a = agent(who); a.state = "blocked"; a.reason = `${ev.unit}: ${ev.reason}`; a.node = ev.members?.[0] ?? a.node; a.lastAt = t;
+      M.blockers.unshift({ kind: "blocked", agent: who, node: a.node, text: a.reason, t });
+      feed(`■ ${who} BLOCKED on ${ev.unit}: ${ev.reason}`, "err");
+      break;
+    }
+  }
+  // A node found before its parent edge arrived (or never got one) hangs off the start node.
+  dirty = true;
+}
+
+function stalledFor(a) {
+  if (a.state === "done" || a.state === "idle" || a.state === "blocked") return 0;
+  const now = live ? Date.now() : M.now;
+  const gap = live ? now - a.lastAt : (a.nextAt ?? Infinity) - a.lastAt;
+  if (live) return gap > STALL_MS ? gap : 0;
+  // In a replay an agent is stalled when its next event is far off in real time.
+  return gap > STALL_MS && gap !== Infinity ? gap : 0;
+}
+const fmtDur = (ms) => ms < 60_000 ? `${Math.round(ms / 1000)} s` : ms < 3_600_000 ? `${Math.round(ms / 60_000)} min` : `${(ms / 3_600_000).toFixed(1)} h`;
+
+// ---------- the stream ----------
+function connect(runId) {
+  if (es) es.close();
+  log = []; vt = []; caught = false; reset(); colorOf.clear();
+  es = new EventSource(`/events?run=${runId}`);
+  es.onmessage = (m) => {
+    const batch = JSON.parse(m.data);
+    for (const ev of batch) {
+      ev.t = Date.parse(ev.at);
+      const prev = log[log.length - 1];
+      vt.push(prev ? vt[vt.length - 1] + Math.min(Math.max(ev.t - prev.t, 0), IDLE_CAP) : 0);
+      log.push(ev);
+    }
+    if (live) catchUp();
+  };
+  es.addEventListener("caught-up", () => {
+    caught = true;
+    const last = log[log.length - 1];
+    // A run that finished a while ago opens as a replay from the start; a running one opens live.
+    if (last && Date.now() - last.t > 5 * 60_000) setMode(false, 0);
+    else catchUp();
+  });
+  es.onerror = () => { $("live-dot").classList.remove("on"); };
+}
+function annotateNextAt(upto) {
+  // For stall display in replay: each agent's next own event after the cursor.
+  const next = new Map();
+  for (let i = upto; i < log.length && next.size < 20; i++) { const w = log[i].agent ?? "walker"; if (!next.has(w)) next.set(w, log[i].t); }
+  for (const a of M.agents.values()) a.nextAt = next.get(a.name) ?? Infinity;
+}
+function catchUp() { while (cursor < log.length) apply(log[cursor], cursor++); simV = vt[cursor - 1] ?? 0; }
+function seek(v) {
+  if (v < (vt[cursor - 1] ?? 0)) reset();
+  while (cursor < log.length && vt[cursor] <= v) apply(log[cursor], cursor++);
+  simV = v;
+}
+function setMode(isLive, from) {
+  live = isLive;
+  $("mode-live").setAttribute("aria-pressed", String(live));
+  $("mode-replay").setAttribute("aria-pressed", String(!live));
+  $("live-dot").classList.toggle("on", live);
+  if (live) catchUp(); else { reset(); seek(from ?? 0); playing = true; }
+  syncPlay();
+}
+function syncPlay() { $("play").textContent = playing ? "Pause" : "Play"; $("play").setAttribute("aria-label", playing ? "Pause replay" : "Play replay"); $("play").disabled = live; }
+
+// ---------- tree ----------
+const svg = d3.select("#svg"), vp = d3.select("#vp");
+const zoom = d3.zoom().scaleExtent([0.08, 3]).on("zoom", (e) => { vp.attr("transform", e.transform); svg.classed("far", e.transform.k < 0.6); if (e.sourceEvent) userMoved = true; });
+let userMoved = false, followTarget = null;
+svg.call(zoom).on("dblclick.zoom", null);
+const pos = new Map();
+const ROW = 18, COL = 210;
+
+function layout() {
+  const build = (id) => { const n = M.nodes.get(id); return { id, children: n.children.map(build) }; };
+  const orphans = [...M.nodes.values()].filter((n) => n.parent === null && n.id !== "__root");
+  const rootData = build("__root");
+  for (const o of orphans) rootData.children.push(build(o.id));
+  const h = d3.hierarchy(rootData);
+  d3.tree().nodeSize([ROW, COL]).separation((a, b) => (a.parent === b.parent ? 1 : 1.4))(h);
+  pos.clear();
+  h.each((d) => pos.set(d.data.id, { x: d.y, y: d.x, depth: d.depth, parent: d.parent?.data.id }));
+  return h;
+}
+
+const linkPath = d3.linkHorizontal().x((d) => d.x).y((d) => d.y);
+const fillFor = (s) => s === "frontier" ? "var(--bg)" : `var(--${s === "expanding" ? "expanding" : s})`;
+
+function render() {
+  const h = layout();
+  const trail = new Map(); // node id -> agent colour, for the path root -> agent
+  const hot = new Set();
+  for (const a of M.agents.values()) {
+    if (!a.node || !pos.has(a.node) || a.state === "done") continue;
+    hot.add(a.node);
+    for (let id = a.node; id && id !== "__root"; id = pos.get(id)?.parent) if (!trail.has(id)) trail.set(id, a.state === "blocked" || stalledFor(a) ? css("--blocked") : agentColor(a.name));
+  }
+  const motion = !matchMedia("(prefers-reduced-motion: reduce)").matches && M.nodes.size < 1500;
+  const T = (sel) => (motion ? sel.transition().duration(260) : sel);
+
+  const links = h.links().filter((l) => l.source.data.id !== "__root" || true);
+  d3.select("#links").selectAll("path").data(links, (l) => l.target.data.id).join(
+    (en) => en.append("path").attr("class", "link").attr("d", (l) => { const p = pos.get(l.source.data.id); return linkPath({ source: p, target: p }); }),
+    (up) => up, (ex) => ex.remove())
+    .classed("trail", (l) => trail.has(l.target.data.id))
+    .style("stroke", (l) => trail.get(l.target.data.id) ?? null)
+    .call((s) => T(s).attr("d", (l) => linkPath({ source: pos.get(l.source.data.id), target: pos.get(l.target.data.id) })));
+
+  const data = [...M.nodes.values()].filter((n) => pos.has(n.id));
+  const g = d3.select("#nodes").selectAll("g.node").data(data, (n) => n.id).join(
+    (en) => {
+      const e = en.append("g").attr("class", "node").attr("tabindex", -1).attr("transform", (n) => { const p = pos.get(pos.get(n.id).parent) ?? pos.get(n.id); return `translate(${p.x},${p.y})`; });
+      e.append("path").attr("class", "n");
+      e.append("text").attr("x", 9).attr("dy", "0.32em");
+      e.append("text").attr("class", "extra");
+      e.on("click", (_, n) => select(n.id));
+      return e;
+    }, (up) => up, (ex) => ex.remove());
+  g.attr("class", (n) => `node ${n.status}${n.errors?.length ? " err" : ""}${n.id === selected ? " sel" : ""}${hot.has(n.id) || n.id === selected ? " hot" : ""}`);
+  g.select("path.n")
+    .attr("d", (n) => d3.symbol(n.id === "__root" ? d3.symbolCircle : SHAPES[n.kind] ?? d3.symbolCircle, n.id === "__root" ? 150 : n.kind === "page" ? 95 : 70)())
+    .style("fill", (n) => n.id === "__root" ? "var(--fg)" : fillFor(n.status))
+    .style("stroke", (n) => n.id === "__root" ? "var(--fg)" : `var(--${n.status === "frontier" ? "frontier" : n.status === "expanding" ? "expanding" : n.status})`);
+  g.select("text:not(.extra)").text((n) => (n.id === "__root" ? "start" : `${n.label.slice(0, 30)}${n.kind && n.kind !== "page" ? ` · ${n.kind}` : ""}`));
+  g.select("text.extra").attr("x", 9).attr("dy", "1.5em").text((n) => n.extra ? `+${n.extra} other path${n.extra > 1 ? "s" : ""}` : "");
+  T(g).attr("transform", (n) => { const p = pos.get(n.id); return `translate(${p.x},${p.y})`; });
+
+  // Agents: a ring and a name tag on the node each one is on.
+  const ag = [...M.agents.values()].filter((a) => a.node && pos.has(a.node) && a.state !== "done");
+  const byNode = new Map();
+  const tags = d3.select("#agents").selectAll("g.tag").data(ag, (a) => a.name).join((en) => {
+    const e = en.append("g").attr("class", "tag").style("cursor", "pointer");
+    e.append("circle").attr("class", "ring").attr("r", 11);
+    e.append("rect").attr("height", 18).attr("y", -31);
+    e.append("text").attr("y", -18.5).attr("x", 8);
+    e.on("click", (_, a) => select(a.node));
+    return e;
+  }, (up) => up, (ex) => ex.remove());
+  tags.each(function (a) {
+    const k = byNode.get(a.node) ?? 0; byNode.set(a.node, k + 1);
+    const bad = a.state === "blocked" || stalledFor(a) > 0;
+    const col = bad ? css("--blocked") : agentColor(a.name);
+    const sel = d3.select(this);
+    const label = `${a.name}${bad ? (a.state === "blocked" ? " · BLOCKED" : ` · stalled ${fmtDur(stalledFor(a))}`) : ""}`;
+    sel.select("circle").attr("class", `ring${bad ? " blocked" : ""}`).style("stroke", col).attr("r", 11 + k * 4);
+    sel.select("text").text(label);
+    const w = label.length * 6.3 + 16;
+    sel.select("rect").attr("width", w).style("fill", col);
+    sel.select("rect").attr("y", -31 - k * 20); sel.select("text").attr("y", -18.5 - k * 20);
+    const p = pos.get(a.node);
+    T(sel).attr("transform", `translate(${p.x},${p.y})`);
+  });
+
+  if ($("follow").checked && !userMoved) {
+    const a = ag.find((x) => x.state === "blocked") ?? ag.find((x) => x.state === "walking" || x.state === "building") ?? ag[0];
+    // No agent on the tree yet (the entry pages are being read): keep the newest node in view.
+    const target = a?.node ?? M.newest;
+    if (target && target !== followTarget) { followTarget = target; centerOn(target, true); }
+  }
+}
+
+function centerOn(id, smooth) {
+  const p = pos.get(id); if (!p) return;
+  const box = $("svg").getBoundingClientRect();
+  const k = Math.max(d3.zoomTransform($("svg")).k, 0.75);
+  const t = d3.zoomIdentity.translate(box.width / 2 - p.x * k, box.height / 2 - p.y * k).scale(k);
+  (smooth && !matchMedia("(prefers-reduced-motion: reduce)").matches ? svg.transition().duration(450) : svg).call(zoom.transform, t);
+}
+function fit() {
+  if (!pos.size) return;
+  const xs = [...pos.values()].map((p) => p.x), ys = [...pos.values()].map((p) => p.y);
+  const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs) + 220, Math.min(...ys) - 20, Math.max(...ys) + 20];
+  const box = $("svg").getBoundingClientRect();
+  const k = Math.min(box.width / (x1 - x0), box.height / (y1 - y0), 1.2);
+  svg.transition().duration(300).call(zoom.transform, d3.zoomIdentity.translate(box.width / 2 - ((x0 + x1) / 2) * k, box.height / 2 - ((y0 + y1) / 2) * k).scale(k));
+  userMoved = true;
+}
+
+// ---------- side panel ----------
+function esc(s) { return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
+function panel() {
+  let front = 0, closed = 0, built = 0, gap = 0;
+  for (const n of M.nodes.values()) { if (n.id === "__root") continue; if (n.status === "frontier" || n.status === "expanding") front++; else if (n.status === "closed") closed++; else if (n.status === "built" || n.status === "verified") built++; else if (n.status === "gap") gap++; }
+  $("s-nodes").textContent = M.nodes.size - 1; $("s-edges").textContent = M.edges; $("s-tpl").textContent = M.templates;
+  $("s-front").textContent = front; $("s-closed").textContent = closed; $("s-built").textContent = built; $("s-gap").textContent = gap;
+
+  const agents = [...M.agents.values()];
+  $("agents-list").innerHTML = agents.length ? agents.map((a) => {
+    const st = stalledFor(a); const state = st ? "stalled" : a.state;
+    const col = agentColor(a.name);
+    return `<button class="row${state === "blocked" || state === "stalled" ? " bad" : ""}" data-node="${esc(a.node)}">
+      <span class="top"><span class="dot" style="background:${col}"></span><b>${esc(a.name)}</b><span class="badge ${state}">${state}${st ? ` ${fmtDur(st)}` : ""}</span></span>
+      <span class="sub" style="display:block">on “${esc(nodeLabel(a.node) ?? "-")}”</span>
+      <span class="sub" style="display:block">${a.reason ? `⚠ ${esc(a.reason)}` : esc(a.element || "")}</span>
+      <span class="sub" style="display:block">${a.steps} nodes · ${a.errors} errors</span></button>`;
+  }).join("") : `<p class="empty">No agent activity yet.</p>`;
+
+  const bl = M.blockers.slice(0, 30);
+  $("blockers").innerHTML = bl.length ? bl.map((b) => `<button class="row bad" data-node="${esc(b.node)}"><span class="top"><b>${b.kind === "blocked" ? "■ blocked" : b.kind === "gap" ? "✗ gap" : "! error"}</b><span class="badge blocked">${esc(b.agent)}</span></span><span class="sub" style="display:block">“${esc(nodeLabel(b.node))}”${b.element ? ` · ${esc(b.element)}` : ""}</span><span class="sub" style="display:block" title="${esc(b.text)}">${esc(b.text)}</span></button>`).join("") : `<p class="empty">Nothing blocked.</p>`;
+
+  $("feed").innerHTML = M.feed.slice(0, 60).map((f) => `<li class="${f.cls}" title="${esc(f.text)}">${esc(f.text)}</li>`).join("");
+
+  const n = selected && M.nodes.get(selected);
+  $("detail").innerHTML = n ? `<dl><dt>label</dt><dd>${esc(n.label)}</dd><dt>kind</dt><dd>${esc(n.kind)}</dd><dt>status</dt><dd>${esc(n.status)}</dd><dt>template</dt><dd>${esc(n.template ?? "-")}</dd><dt>depth</dt><dd>${esc(n.depth ?? pos.get(n.id)?.depth)}</dd><dt>reached by</dt><dd>${esc(n.via ?? (n.entry ? "entry page" : "-"))}</dd><dt>other paths</dt><dd>${n.extra ?? 0}</dd><dt>children</dt><dd>${n.children.length}</dd><dt>url</dt><dd>${esc(n.url ?? "")}</dd><dt>found by</dt><dd>${esc(n.foundBy ?? "")}</dd>${n.errors?.length ? `<dt>errors</dt><dd>${n.errors.slice(0, 5).map(esc).join("<br>")}</dd>` : ""}</dl>` : `<p class="empty">Click a node, an agent or a blocker.</p>`;
+
+  const t = live ? (log[log.length - 1]?.t) : M.now;
+  $("clock").textContent = t ? `${live ? "live · last event" : "replay"} ${new Date(t).toLocaleString()}` : "waiting for events…";
+  const total = vt[vt.length - 1] || 1;
+  if (document.activeElement !== $("scrub")) $("scrub").value = String(Math.round((live ? 1 : simV / total) * 1000));
+}
+function select(id) { if (!id || !M.nodes.has(id)) return; selected = id; userMoved = true; centerOn(id, true); dirty = true; }
+document.querySelector("aside").addEventListener("click", (e) => { const b = e.target.closest("[data-node]"); if (b) select(b.dataset.node); });
+
+// ---------- loop ----------
+function frame(ts) {
+  const dt = lastFrame ? ts - lastFrame : 0; lastFrame = ts;
+  if (!live && playing && log.length) {
+    const target = Math.min(simV + dt * +$("speed").value, vt[vt.length - 1]);
+    seek(target);
+    if (target >= vt[vt.length - 1]) { playing = false; syncPlay(); }
+  }
+  if (!live) annotateNextAt(cursor);
+  const now = performance.now();
+  if (dirty && now - lastLayout > (M.nodes.size > 800 ? 500 : 200)) { render(); panel(); dirty = false; lastLayout = now; }
+  else if (now - lastLayout > 1000) { panel(); lastLayout = now; if (live) render(); }
+  requestAnimationFrame(frame);
+}
+
+$("mode-live").onclick = () => { setMode(true); userMoved = false; };
+$("mode-replay").onclick = () => setMode(false, 0);
+$("play").onclick = () => { playing = !playing; syncPlay(); };
+$("scrub").oninput = (e) => { if (live) setMode(false, 0); seek((+e.target.value / 1000) * (vt[vt.length - 1] || 0)); playing = false; syncPlay(); };
+$("fit").onclick = fit;
+$("follow").onchange = () => { userMoved = false; followTarget = null; dirty = true; };
+$("run").onchange = (e) => connect(+e.target.value);
+new ResizeObserver(() => document.documentElement.style.setProperty("--hh", `${$("hdr").offsetHeight}px`)).observe($("hdr"));
+
+fetch("/runs").then((r) => r.json()).then((rs) => {
+  runs = rs;
+  $("run").innerHTML = rs.map((r) => `<option value="${r.id}">${esc(r.name)}</option>`).join("");
+  connect(0);
+  syncPlay();
+  requestAnimationFrame(frame);
+});
+</script>
+</body>
+</html>

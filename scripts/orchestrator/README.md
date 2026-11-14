@@ -16,6 +16,7 @@ Site-agnostic: nothing here names a target. A build's data lives in its own
 | 1 | graph engine: format, dedupe, templates, priority queue, shortest path, build order, loops | `heap.mjs` `algorithms.mjs` `graph.mjs` `store.mjs` `cli.mjs` | done 2026-10-14 |
 | L | learning engine | `../../learning/` | done 2026-10-14; packets call `select` per unit since 2026-10-26 |
 | 2 | live diagram from the graph | `views.mjs` (`graph.html`, `tree.md`) | done 2026-10-26 |
+| 2b | streamed live tree: `watch` serves `events.jsonl` over SSE to `watch.html`; events name their agent (`SEEMLY_AGENT` / `--agent`); walker position (`walker.at` per element), `walker.error` / `blocked` / `resumed` / `done`, `unit.claimed` / `done` / `blocked`; stall shown after 90 s silence; replay with a scrubber; seemly-video writes the same events (`video/scripts/video_live.py`) | `watch.mjs` `watch.html` `graph.mjs` `store.mjs` `explore.mjs` `run.mjs` | done 2026-11-14 (`test/watch`) |
 | 3 | explore coordinator: pop, reach by replay route, capture, fire every element, push children, until closed; writes aborted, risky names held | `explore.mjs` `page-probe.mjs` `safety.mjs` `bound.mjs` `run.mjs` | done 2026-10-26, e2e on a fixture app (`X-EXPLORE`) |
 | 4 | build phase: units in dependency order, one at a time, a packet per unit | `build.mjs` `run.mjs` | done 2026-10-26 (`X-FLOW`) |
 | 5 | `SKILL.md` drives the coordinator instead of prose | `SKILL.md` sections 4-5, `reference/graph.md` | done 2026-10-26 |
@@ -26,7 +27,7 @@ Site-agnostic: nothing here names a target. A build's data lives in its own
 | 9 | every interaction kind a first-class edge: right-click, double-click, documented shortcuts and keyboard activation, drag, form input and submit (empty, valid, one invalid value per constraint), uploads; Tab order per node; per-node invariant over every kind; verify's `interactions` check edge by edge. Hash routes in node identity; a scope-driven walk (`--scope-map --scope`, shallow out-of-scope, `--entries-from`); STATE_BOUND never bounds an entry or in-scope page | `interactions.mjs` `explore.mjs` `graph.mjs` `bound.mjs` `compare.mjs` `verify.mjs` `run.mjs` | done 2026-11-14 (`test/interactions` `test/verify-e2e`) |
 
 Not done: the walker does not draw on a map or canvas (Chrome does, SKILL.md section 4);
-the live diagram is regenerated per chunk, not streamed; workers share no graph file, so
+`graph.html` is regenerated per chunk (`watch` is the streamed view); workers share no graph file, so
 each area's walk is diffed from its own copy. `verify` compares widths by structural labels
 only (no per-width pixels), and a websocket read only against an HTTP mirror named in
 `ws-map.json` (never socket to socket).
@@ -220,6 +221,7 @@ The commands SKILL.md runs, from the clone repo's root (`RL_REPO` overrides):
 node run.mjs init --target <url> [--prefix /path] [--entry <url>]...
 node run.mjs explore --max-nodes 40 [--risky probe] [--allow-post <regex>] [--cdp http://127.0.0.1:9222] [--headed]
 node run.mjs status | tree | live | pending | frontier | route <id> | loops
+node run.mjs watch [--port 4777] [--dir d] [more dirs]           # streamed live tree, agents, blockers, replay
 node run.mjs requeue <id> | requeue --failed | requeue --gaps [--reason <text>] | gap <id> --reason "..."
 node run.mjs explore --dir <copy> --only-prefix /area ...       # one parallel worker per area
 node run.mjs explore ... --ws-guard block|off --retries 3 --login-pattern <regex> --widths off|1024,1280
@@ -231,7 +233,8 @@ node run.mjs compare --ref <dirs> --clone <dirs> [--scope S01] --out diff.md   #
 node run.mjs verify --ref <dirs> --clone <dir> [--scope S01] [--node <id>] --masks masks.json --writes writes.json \
   --ws-map ws-map.json [--styles-allow styles-allow.json] [--dead-controls]
 node run.mjs report --clone <dir> --scope S01                    # <clone>/verify/report-S01.md
-node run.mjs plan | next-unit | packet <unit> | unit-done <unit> [--verified]
+node run.mjs plan | next-unit | packet <unit> | unit-done <unit> [--verified] | unit-blocked <unit> --reason "..."
+node run.mjs <any> --agent <name>                                # who the live view shows for this process
 ```
 
 Engine views and tests (the end-to-end test needs Playwright, resolved from `RL_REPO`):
