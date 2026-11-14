@@ -223,6 +223,75 @@ export function openOnLoad() {
   });
 }
 
+/**
+ * What floats right now, as a census the explorer compares against a node's pre-state: every
+ * visible role-marked overlay (tooltips aside: they follow the pointer) and every large z-indexed
+ * fixed/absolute box, outermost only. `key` is role plus css path, so an extra open menu shows as
+ * an extra key; `close` names a dismiss control inside it, if it has one.
+ */
+export function openFloating(sel) {
+  const visible = (el) => (el.checkVisibility ? el.checkVisibility({ opacityProperty: true, visibilityProperty: true }) : el.getClientRects().length > 0);
+  const cssPath = (el) => {
+    const parts = [];
+    for (let e = el; e && e.nodeType === 1 && e !== document.documentElement; e = e.parentElement) {
+      if (e.id && /^[A-Za-z][\w-]{0,40}$/.test(e.id) && !/\d{3,}/.test(e.id) && document.querySelectorAll(`#${CSS.escape(e.id)}`).length === 1) {
+        parts.unshift(`#${CSS.escape(e.id)}`);
+        break;
+      }
+      const tag = e.tagName.toLowerCase();
+      const sibs = e.parentElement ? [...e.parentElement.children].filter((s) => s.tagName === e.tagName) : [];
+      parts.unshift(sibs.length > 1 ? `${tag}:nth-of-type(${sibs.indexOf(e) + 1})` : tag);
+    }
+    return parts.join(" > ");
+  };
+  const found = [];
+  for (const el of document.querySelectorAll(sel)) if (visible(el) && el.getAttribute("role") !== "tooltip") found.push(el);
+  for (const el of document.body.querySelectorAll("*")) {
+    if (!visible(el)) continue;
+    const cs = getComputedStyle(el);
+    if (cs.position !== "fixed" && cs.position !== "absolute") continue;
+    const r = el.getBoundingClientRect();
+    if (r.width * r.height < 40000 || cs.zIndex === "auto" || +cs.zIndex < 1) continue;
+    found.push(el);
+  }
+  const outer = [...new Set(found)].filter((el) => !found.some((o) => o !== el && o.contains(el)));
+  const DISMISS = /^(close|dismiss|done|cancel|skip( tour)?|got it|no,? thanks|not now|maybe later|later|ok(ay)?|back|×|✕|x)$|^close\b/i;
+  return outer
+    .map((el) => {
+      const role = el.getAttribute("role") || (el.tagName === "DIALOG" ? "dialog" : "overlay");
+      const css = cssPath(el);
+      const btn = [...el.querySelectorAll("button,[role=button],a")].find((b) => visible(b) && DISMISS.test((b.getAttribute("aria-label") || b.innerText || b.getAttribute("title") || "").trim()));
+      return { key: `${role}@${css}`, role, css, close: btn ? (btn.id ? `#${CSS.escape(btn.id)}` : cssPath(btn)) : null };
+    })
+    .sort((a, b) => (a.key < b.key ? -1 : 1));
+}
+
+/**
+ * Is this page a sign-in page, a session-ended notice, or a transient error page (a 5xx, a
+ * "service unavailable")? `loginSrc` is a regex source for sign-in URLs; the default covers the
+ * usual paths and identity hosts. Read on every navigation the explorer makes.
+ */
+export function sessionState({ loginSrc = null } = {}) {
+  const visible = (el) => (el.checkVisibility ? el.checkVisibility({ opacityProperty: true, visibilityProperty: true }) : el.getClientRects().length > 0);
+  const href = location.href;
+  const login = new RegExp(
+    loginSrc ||
+      "(^https?://(login|auth|sso|idp|signin|accounts)[.-])|/(login|log-in|signin|sign-in|sign_in|logon|authn?|sso|saml2?|oauth2?|openid|adfs|cas|idp)(/|\\?|#|\\.|$)",
+    "i",
+  );
+  const text = (document.body?.innerText ?? "").replace(/\s+/g, " ").trim();
+  const short = text.length < 1500;
+  const transient =
+    /serviceUnavailable|service[-_]unavailable/i.test(href) ||
+    /^(5\d\d\b|service unavailable|bad gateway|gateway time-?out|temporarily unavailable)/i.test(document.title) ||
+    (short && /\b(503 service unavailable|502 bad gateway|504 gateway time-?out|service (is )?(temporarily )?unavailable|temporarily unavailable|try again (in a few|later))\b/i.test(text));
+  const pw = [...document.querySelectorAll("input[type=password]")].some(visible);
+  const signInBtn = [...document.querySelectorAll("button,input[type=submit],[role=button]")].some((b) => visible(b) && /^(sign ?in|log ?in|continue|next)$/i.test((b.innerText || b.value || "").trim()));
+  const ended = /\b(session (has )?(expired|ended|timed out)|you have been (logged|signed) out|please (log|sign) in again)\b/i.test(text.slice(0, 4000));
+  const isLogin = login.test(href) || (pw && signInBtn && text.length < 3000);
+  return { href, transient, login: isLogin, ended, why: transient ? "transient error page" : isLogin ? "sign-in page" : ended ? "session-ended notice" : null };
+}
+
 /** Drop the marks so the next interaction starts clean. */
 export function clearMarks() {
   for (const el of document.querySelectorAll("[data-seemly-pre]")) delete el.dataset.seemlyPre;
