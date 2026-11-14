@@ -111,7 +111,7 @@ const sessHome = plain("Session", `<h1>Session</h1><button onclick="fetch('/sess
 const login = plain("Sign in", `<h1>Sign in</h1><form><label>User <input name="u"></label><label>Password <input type="password" name="p"></label><button type="button">Sign in</button></form>`);
 
 /** A websocket endpoint without dependencies: RFC 6455 handshake, text frames only. */
-function acceptWs(req, socket, onText) {
+export function acceptWs(req, socket, onText) {
   const accept = createHash("sha1").update(`${req.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
   socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
   const send = (text) => {

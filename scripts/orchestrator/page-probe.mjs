@@ -292,6 +292,69 @@ export function sessionState({ loginSrc = null } = {}) {
   return { href, transient, login: isLogin, ended, why: transient ? "transient error page" : isLogin ? "sign-in page" : ended ? "session-ended notice" : null };
 }
 
+/**
+ * The computed-style manifest Phase D compares (`verify` style): for every visible interactive,
+ * heading and landmark element inside the scope, its role, accessible name (digits as `#`), the
+ * nth among equal role-and-name pairs, and a fixed property set. `scopeRect` is the scope's box
+ * in viewport CSS px, which verify crops an overlay's pixels to.
+ */
+export function styleManifest({ scopeCss = null, max = 600 } = {}) {
+  const PROPS = ["fontFamily", "fontSize", "fontWeight", "lineHeight", "color", "backgroundColor", "borderWidth", "borderStyle", "borderColor", "borderRadius", "padding", "margin", "gap", "boxShadow"];
+  const visible = (el) => (el.checkVisibility ? el.checkVisibility({ opacityProperty: true, visibilityProperty: true }) : el.getClientRects().length > 0);
+  const text = (s, n = 80) => (s ?? "").replace(/\s+/g, " ").trim().slice(0, n);
+  const nameOf = (el) => {
+    const lb = el.getAttribute("aria-labelledby");
+    const byId = lb ? lb.split(/\s+/).map((id) => document.getElementById(id)?.innerText ?? "").join(" ") : "";
+    const own = el.getAttribute("aria-label") || byId;
+    if (own) return text(own);
+    if (/^(HEADER|NAV|MAIN|ASIDE|FOOTER|SECTION|FORM|DIALOG)$/.test(el.tagName) || /^(banner|navigation|main|complementary|contentinfo|region|form|dialog|alertdialog)$/.test(el.getAttribute("role") ?? "")) return "";
+    return text(el.innerText || el.getAttribute("title") || el.querySelector("img[alt]")?.alt || el.value || el.getAttribute("placeholder") || "");
+  };
+  const TAG_ROLE = { A: "link", BUTTON: "button", SUMMARY: "button", SELECT: "combobox", TEXTAREA: "textbox", HEADER: "banner", NAV: "navigation", MAIN: "main", ASIDE: "complementary", FOOTER: "contentinfo", SECTION: "region", FORM: "form", DIALOG: "dialog", H1: "heading", H2: "heading", H3: "heading", H4: "heading", H5: "heading", H6: "heading" };
+  const roleOf = (el) => {
+    const r = el.getAttribute("role");
+    if (r) return r.split(/\s+/)[0];
+    if (el.tagName === "INPUT") {
+      const t = (el.getAttribute("type") || "text").toLowerCase();
+      return { checkbox: "checkbox", radio: "radio", button: "button", submit: "button", reset: "button", range: "slider" }[t] ?? "textbox";
+    }
+    return TAG_ROLE[el.tagName] ?? "generic";
+  };
+  const SEL = [
+    "a[href]", "button", "summary", "select", "textarea", "input:not([type=hidden])", "h1", "h2", "h3", "h4", "h5", "h6",
+    "header", "nav", "main", "aside", "footer", "dialog", "section[aria-label]", "form[aria-label]",
+    ...["button", "link", "tab", "menuitem", "option", "switch", "checkbox", "radio", "combobox", "textbox", "heading", "banner", "navigation", "main", "complementary", "contentinfo", "region", "dialog", "alertdialog", "tablist", "menu", "columnheader"].map((r) => `[role=${r}]`),
+  ].join(",");
+  const root = (scopeCss && document.querySelector(scopeCss)) || document.body;
+  const box = root.getBoundingClientRect();
+  const seen = new Map();
+  const elements = [];
+  const els = [...(root.matches?.(SEL) ? [root] : []), ...root.querySelectorAll(SEL)];
+  for (const el of els) {
+    if (elements.length >= max) break;
+    if (!visible(el)) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) continue;
+    const role = roleOf(el);
+    const name = nameOf(el).replace(/\d+([.,]\d+)*/g, "#");
+    const k = `${role}|${name}`;
+    const nth = seen.get(k) ?? 0;
+    seen.set(k, nth + 1);
+    const cs = getComputedStyle(el);
+    const style = {};
+    for (const p of PROPS) style[p] = cs[p];
+    style.width = `${Math.round(r.width * 10) / 10}px`;
+    style.height = `${Math.round(r.height * 10) / 10}px`;
+    elements.push({ role, name, nth, style });
+  }
+  return {
+    viewport: { width: innerWidth, height: innerHeight },
+    scope: scopeCss,
+    scopeRect: scopeCss && root !== document.body ? { x: box.x, y: box.y, width: box.width, height: box.height } : null,
+    elements,
+  };
+}
+
 /** Drop the marks so the next interaction starts clean. */
 export function clearMarks() {
   for (const el of document.querySelectorAll("[data-seemly-pre]")) delete el.dataset.seemlyPre;

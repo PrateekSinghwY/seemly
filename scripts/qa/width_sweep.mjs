@@ -15,9 +15,9 @@ import { parseArgs } from "node:util";
 
 import { writeCheckRecord } from "../lib/check-record.mjs";
 import { DISCOVERY, openClone, openReference, settle } from "../lib/pw.mjs";
-import { allowFrom, diffLabels, pairsFrom, readLabels, slug } from "./labels.mjs";
+import { DEFAULT_WIDTHS, allowFrom, diffLabels, pairsFrom, readLabels, slug } from "./labels.mjs";
 
-export const DEFAULT_WIDTHS = [1024, 1280, 1366, 1440, 1536, 1680, 1920, 2560];
+export { DEFAULT_WIDTHS };
 
 const { values: o } = parseArgs({
   options: {

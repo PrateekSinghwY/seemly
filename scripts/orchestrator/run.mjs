@@ -7,6 +7,7 @@
 //     explore [--max-nodes N] [--risky record|probe] [--allow-post <regex>]... [--read-posts off|auto]
 //             [--pace <ms>] [--relogin-wait <minutes>] [--sample K] [--only-prefix /area]...
 //             [--ws-guard block|off] [--retries N] [--backoff-ms N] [--login-pattern <regex>]
+//             [--widths 1024,1280,...|off]                         label widths saved per node for verify
 //     visit <url>                                                  add one more entry page
 //     requeue <nodeId> | requeue --failed | requeue --gaps [--reason <r>] | gap <nodeId> --reason "..."
 //                                                                  corrections; --gaps puts back every gap with a retryable reason
@@ -19,6 +20,7 @@
 //     unit-done <unit> [--verified]
 //   verify phase (Phase D)
 //     verify --ref <dir>... --clone <dir> [--scope id] [--node id] [--masks masks.json] [--writes writes.json]
+//            [--styles-allow styles-allow.json] [--ws-map ws-map.json] [--dead-controls]
 //            [--ref-prefix p] [--clone-prefix p] [--dpr 1] [--api url] [--web url]
 //     report [--clone <dir>] [--scope id] [--out report.md]        ref node -> clone node -> each check -> reason
 //   views
@@ -85,6 +87,10 @@ const { values: o, positionals } = parseArgs({
     retries: { type: "string" },
     "backoff-ms": { type: "string" },
     "login-pattern": { type: "string" },
+    widths: { type: "string" },
+    "styles-allow": { type: "string" },
+    "ws-map": { type: "string" },
+    "dead-controls": { type: "boolean", default: false },
   },
 });
 const dir = o.dir;
@@ -150,6 +156,7 @@ function walkerOptions() {
   if (o.retries !== undefined) out.retries = +o.retries;
   if (o["backoff-ms"] !== undefined) out.backoffMs = +o["backoff-ms"];
   if (o["login-pattern"] !== undefined) out.loginPattern = o["login-pattern"];
+  if (o.widths !== undefined) out.widths = o.widths === "off" ? "off" : o.widths.split(",").map(Number);
   return out;
 }
 const UNITS = (pr) => ["pending", "building", "built", "verified"].map((k) => `${k} ${pr[k]}`).join(" · ");
@@ -334,6 +341,7 @@ switch (cmd) {
     if (!o.ref?.length || !o.clone?.length) throw new Error("verify needs --ref <ref graph dir>... --clone <clone graph dir>");
     const r = await verify({
       refDirs: o.ref, cloneDir: o.clone[0], scope: o.scope, node: o.node, masks: o.masks, writes: o.writes,
+      stylesAllow: o["styles-allow"], wsMap: o["ws-map"], deadControls: o["dead-controls"],
       refPrefix: o["ref-prefix"], clonePrefix: o["clone-prefix"], dpr: +o.dpr, height: +o.height, api: o.api, web: o.web,
       log: say,
     });

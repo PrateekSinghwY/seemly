@@ -2,13 +2,21 @@
 // diff of two readings is a list of invented or missing bar items, headings, table headers,
 // tabs, buttons and field labels. Shared by struct_audit and width_sweep.
 
-/** In-page (serialised by page.evaluate): self-contained. */
-export function readLabels() {
+/** Widths every page is read at by width_sweep.mjs and Phase D (`verify` widths). */
+export const DEFAULT_WIDTHS = [1024, 1280, 1366, 1440, 1536, 1680, 1920, 2560];
+
+/**
+ * In-page (serialised by page.evaluate): self-contained. `scopeCss` reads only inside that
+ * element (an overlay); it is `null` when the element is not there.
+ */
+export function readLabels({ scopeCss = null } = {}) {
+  const root = scopeCss ? document.querySelector(scopeCss) : document;
+  if (!root) return null;
   const visible = (el) => (el.checkVisibility ? el.checkVisibility({ opacityProperty: true, visibilityProperty: true }) : el.getClientRects().length > 0);
   // Digits are data, not structure: "3 listings" and "41 listings" are one label.
   const norm = (s) => (s ?? "").replace(/\s+/g, " ").trim().replace(/\d+([.,]\d+)*/g, "#").slice(0, 80);
   const name = (el) => norm(el.getAttribute("aria-label") || el.innerText || el.getAttribute("title") || el.value || el.querySelector("img[alt]")?.alt || "");
-  const all = (sel, f = name, within = document) => [...within.querySelectorAll(sel)].filter(visible).map(f).filter(Boolean);
+  const all = (sel, f = name, within = root) => [...within.querySelectorAll(sel)].filter(visible).map(f).filter(Boolean);
   const NAV = "nav,header,[role=navigation],[role=banner],[role=menubar],[role=tablist]";
   const inNav = (el) => !!el.closest(NAV);
   // Controls inside table body rows are data (one per listing), not page structure: the
@@ -20,14 +28,14 @@ export function readLabels() {
       const t = name(el);
       return t ? `h${/^\d$/.test(lvl) ? lvl : "?"} ${t}` : "";
     }),
-    nav: [...document.querySelectorAll(`a[href],button,[role=menuitem],[role=link],[role=button]`)].filter((el) => visible(el) && inNav(el) && el.getAttribute("role") !== "tab").map(name).filter(Boolean),
+    nav: [...root.querySelectorAll(`a[href],button,[role=menuitem],[role=link],[role=button]`)].filter((el) => visible(el) && inNav(el) && el.getAttribute("role") !== "tab").map(name).filter(Boolean),
     tabs: all("[role=tab]"),
-    buttons: [...document.querySelectorAll("button,[role=button],input[type=submit],input[type=button]")].filter((el) => visible(el) && !inNav(el) && !inRow(el)).map(name).filter(Boolean),
+    buttons: [...root.querySelectorAll("button,[role=button],input[type=submit],input[type=button]")].filter((el) => visible(el) && !inNav(el) && !inRow(el)).map(name).filter(Boolean),
     tableHeaders: all("th,[role=columnheader]"),
-    fields: [...document.querySelectorAll("input:not([type=hidden]),select,textarea")].filter((el) => visible(el) && !inRow(el)).map((el) =>
+    fields: [...root.querySelectorAll("input:not([type=hidden]),select,textarea")].filter((el) => visible(el) && !inRow(el)).map((el) =>
       norm((el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`)?.innerText) || el.closest("label")?.innerText || el.getAttribute("aria-label") || el.getAttribute("placeholder") || el.name || ""),
     ).filter(Boolean),
-    overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+    overflowX: scopeCss ? root.scrollWidth > root.clientWidth + 1 : document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
   };
 }
 

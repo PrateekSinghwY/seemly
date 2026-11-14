@@ -229,9 +229,10 @@ loop, start to finish, every time. The human should never have to restate it.
    allowed.
 3b. **Phase D on every built node** (SKILL.md section 0.4): pixels, structure and accessibility tree,
    style, human eye, widths, network (`api_diff.mjs`), writes. `O verify --ref <ref> --clone
-   <clone> [--scope id]` runs pixels, structure and AX tree, human eye, network and writes per
-   matched node pair and writes a check record per channel under `<clone>/verify/<node>/`;
-   style and widths still run by their own scripts. A node without passing check records is
+   <clone> [--scope id] --ws-map ws-map.json --dead-controls` runs all seven per matched node
+   pair (pixels, structure and AX tree, computed style, human eye with dead controls, widths,
+   HTTP and websocket reads, writes), an overlay judged on its own region, and writes a check
+   record per channel under `<clone>/verify/<node>/`. A node without passing check records is
    `needs-verify`, never built.
 4. **Diff the two graphs:** `O compare --ref <ref> --clone <clone>`. Confirm every line by
    hand. Each confirmed line is fixed, and its node goes back on the queue. Compare also writes
@@ -257,7 +258,7 @@ command takes `--dir <graph dir>` (default `never_to_be_pushed/discovery`).
 | command | what it does |
 |---|---|
 | `O init --target <url> [--prefix /p]... [--entry <url>]...` | create the graph from entry pages |
-| `O explore [--max-nodes N] [--only-prefix /area]... [--ws-guard block\|off] [--retries N] [--login-pattern re]` | walk to CLOSED, one chunk at a time |
+| `O explore [--max-nodes N] [--only-prefix /area]... [--ws-guard block\|off] [--retries N] [--login-pattern re] [--widths off\|list]` | walk to CLOSED, one chunk at a time |
 | `O visit <url>` | add one more entry page |
 | `O requeue <node>` · `O requeue --failed` | put one node, or every give-up of a dead browser, back on the frontier |
 | `O requeue --gaps [--reason <text>]` | put every gap with a retryable reason back (the walker's `gapReason`; a gap with no reason counts as retryable) |
@@ -266,7 +267,7 @@ command takes `--dir <graph dir>` (default `never_to_be_pushed/discovery`).
 | `O status [--scope id]` · `O tree [--scope id]` · `O live` · `O frontier` · `O route <node>` · `O loops` · `O pending` | views; status adds `VERIFY verified N / built M / ref-only K` once pairs exist |
 | `O plan` · `O next-unit` · `O packet <unit>` · `O unit-done <unit> [--verified]` | build units in dependency order |
 | `O compare --ref <dirs> --clone <dirs> [--scope id] [--out diff.md]` | walked-graph diff, plus `<clone>/pairs.json` |
-| `O verify --ref <dirs> --clone <dir> [--scope id] [--node id] [--masks masks.json] [--writes writes.json] [--ref-prefix p] [--clone-prefix p] [--dpr 1]` | Phase D per node pair; exits 1 when any pair fails |
+| `O verify --ref <dirs> --clone <dir> [--scope id] [--node id] [--masks masks.json] [--writes writes.json] [--styles-allow f] [--ws-map f] [--dead-controls] [--ref-prefix p] [--clone-prefix p] [--dpr 1]` | Phase D per node pair: pixels, structure, style, human eye, widths, api (HTTP and ws), writes; exits 1 when any pair fails |
 | `O report [--clone <dir>] [--scope id] [--out file]` | markdown: ref node -> clone node -> each check -> reason, then every ref-only node with its reason |
 
 **scope.json:** `{ "rules": [{ "scope": "S01", "url": "^/app/timecards" }, { "scope": "S02",
@@ -282,6 +283,17 @@ state takes its parent's. Untagged nodes are `unscoped`.
 { "ignore": ["^Last updated"] }, "api": { "ignore": ["/analytics"] }, "humanEye": { "allow":
 [...] } }`. Masks cover synthetic data (names, numbers, dates) on both screenshots; regions
 add named areas to the per-region pixel counts, which already include every landmark.
+
+**styles-allow.json** (verify): `{ "ceilings": { "width": 1, "height": 1 }, "allow": [{ "element":
+"^button \"Save\"", "prop": "width", "max": 4, "reason": "..." }] }`. A ceiling applies to a property
+everywhere (px for lengths, channel units for colours); an allow row to the elements its regex
+matches (keys are `role "name"`, digits as `#`), and needs a reason. Default: equal.
+
+**ws-map.json** (verify): `{ "/shifts/list": { "method": "GET", "path": "/api/shifts" } }`, each
+reference websocket call name to the clone's HTTP mirror. Request fields compare as query keys
+for GET (else body fields; `"request": "query" | "body"` overrides), response fields as for HTTP.
+A ws read with no entry fails as `ws call not mirrored`. masks.json may also carry `"widths":
+{ "allow": [{ "category": "buttons", "label": "...", "reason": "..." }] }`.
 
 **writes.json** (verify): `write_roundtrip.mjs` rows, each with `node` (a ref or clone node id)
 or `at` (a path) saying which pair it belongs to. A node with write edges or pending writes

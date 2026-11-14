@@ -23,7 +23,8 @@ import { openReference, settle } from "../lib/pw.mjs";
 import { similarity } from "./algorithms.mjs";
 import { STATE_BOUND, admit, inScope, repeatGroup } from "./bound.mjs";
 import { canonicalUrl } from "./graph.mjs";
-import { FLOATING_SEL, clearMarks, markFloating, newOverlays, openFloating, openOnLoad, probe, sessionState } from "./page-probe.mjs";
+import { DEFAULT_WIDTHS, readLabels } from "../qa/labels.mjs";
+import { FLOATING_SEL, clearMarks, markFloating, newOverlays, openFloating, openOnLoad, probe, sessionState, styleManifest } from "./page-probe.mjs";
 import { RequestClassifier, classify, classifyFrame, pairFrames, parseFrame } from "./safety.mjs";
 import { save } from "./store.mjs";
 
@@ -190,12 +191,15 @@ const KIND_OF_ROLE = { dialog: "modal", alertdialog: "modal", menu: "menu", list
  *   loginPattern regex source for sign-in URLs (`--login-pattern <regex>`)
  *   wsGuard      "block" (default): websocket calls that are not reads are dropped in the
  *                browser; "off": frames are only recorded (`--ws-guard block|off`)
+ *   widths       widths each node's structural labels are read at for Phase D, besides the
+ *                capture width (`--widths 1024,1280,...` or `--widths off`; default DEFAULT_WIDTHS)
  */
 export async function explore(g, dir, opts = {}) {
   const {
     maxNodes = Infinity, risky = "record", allowPost = [], readPosts = "off", pace = 0, sample = SAMPLE, onlyPrefix = null,
-    retries = RETRIES, backoffMs = BACKOFF_MS, loginPattern = null, wsGuard = "block", log = (s) => console.error(s),
+    retries = RETRIES, backoffMs = BACKOFF_MS, loginPattern = null, wsGuard = "block", widths = DEFAULT_WIDTHS, log = (s) => console.error(s),
   } = opts;
+  const sweep = widths === "off" ? [] : [widths].flat().map(Number).filter((w) => w > 0);
   const loginRe = loginPattern ? new RegExp(loginPattern, "i") : LOGIN_URL;
   // A worker that owns part of the site: nodes outside its prefixes are set aside, untouched,
   // and put back on the frontier at the end for the worker that owns them.
@@ -656,6 +660,31 @@ export async function explore(g, dir, opts = {}) {
     return { ...out, blocked: blocked.map((b) => `${b.method} ${b.url}`), reads: reads || undefined, failed: failed.length ? failed : undefined };
   }
 
+  /**
+   * The node's structural labels (qa/labels.mjs) at its capture width and every sweep width,
+   * scoped to the overlay when it is one, then the viewport put back and the pre-state proven
+   * (a resize can close a menu). Null when sweeping is off or the viewport cannot be read.
+   */
+  async function captureWidths(n, scopeCss) {
+    if (!sweep.length) return null;
+    const vp = page.viewportSize() ?? (await page.evaluate(() => ({ width: innerWidth, height: innerHeight })).catch(() => null));
+    if (!vp?.width) return null;
+    const before = await preState();
+    const out = { captured: vp.width, height: vp.height, scope: scopeCss, widths: {} };
+    try {
+      for (const w of [...new Set([vp.width, ...sweep])].sort((a, b) => a - b)) {
+        await page.setViewportSize({ width: w, height: vp.height });
+        await page.waitForTimeout(250);
+        out.widths[w] = await page.evaluate(readLabels, { scopeCss }).catch(() => null);
+      }
+    } finally {
+      await page.setViewportSize(vp).catch(() => {});
+      await page.waitForTimeout(250);
+    }
+    if (!samePre(before, await preState())) await restore(n, before);
+    return out;
+  }
+
   /** The node's websocket calls, paired, written under `ws/`; returns the inventory rows. */
   function writeWs(art, frames) {
     const calls = pairFrames(frames);
@@ -705,6 +734,12 @@ export async function explore(g, dir, opts = {}) {
       }
       return { method: b.method, url: b.url, status: b.status, bytes: b.body.length, file, reqFile };
     });
+    // What Phase D compares beyond pixels and the AX tree: the computed-style manifest and the
+    // structural labels at every sweep width (verify's style and widths checks).
+    const styles = await page.evaluate(styleManifest, { scopeCss }).catch(() => null);
+    if (styles) writeFileSync(join(art, "styles.json"), JSON.stringify(styles));
+    const labelsAt = await captureWidths(n, scopeCss);
+    if (labelsAt) writeFileSync(join(art, "widths.json"), JSON.stringify(labelsAt));
     const wsReads = writeWs(art, frames);
     g.annotate(n.id, { title: r.title, heading: r.heading, interactive: r.candidates.length, artifacts: rel, scope: scopeCss, overflowX: r.overflowX, wsCalls: wsReads.length || undefined });
 

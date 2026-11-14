@@ -80,6 +80,8 @@ and passed, with its check record on disk:
 - **Network:** `api_diff.mjs`, captured reads vs the clone's OpenAPI and responses.
 - **Writes:** `write_roundtrip.mjs`.
 
+`O verify` (section 6) runs every one of these per node pair and writes the records.
+
 The rules:
 - **Tests and API round trips alone are never "built".** They prove one channel of four.
 - **"Not verified" is not a final state** for a channel that can run while the reference is
@@ -306,6 +308,45 @@ once: links are read in a side tab, buttons are clicked, popup triggers hovered,
 becomes a node (page, modal, menu, in-place state) with an edge. Rows past STATE_BOUND are
 sampled while they keep leading to the same template; shell controls are expanded on two
 templates, then inherited. Disabled controls, text fields and selects are inventoried, not fired.
+Each node also saves what Phase D compares later: `styles.json` (the computed-style manifest of
+every interactive, heading and landmark element, plus an overlay's box) and `widths.json` (the
+structural labels at the capture width and at each sweep width, 1024 to 2560; `--widths
+off|<list>`).
+
+What the walker guarantees per node (`explore.mjs`, each with a test in `test/walker.test.mjs`):
+- **Pre-state restore before each fire.** The node's pre-state (URL, skeleton, open overlays) is
+  read once; before every element the page is brought back to it (as left, Escape, the overlay's
+  own close control, else a fresh replay) and proven equal. An element that cannot fire from it
+  is `unfired: state-not-restored`, never an edge read off the wrong state.
+- **Reads are told from writes** by one `RequestClassifier` (`safety.mjs`): read methods pass;
+  a POST passes when `--allow-post` matches, a GraphQL query, or (with `--read-posts auto`) its
+  path or body names a read, and the rule it passed by is learned into `allowed-posts.jsonl`
+  and reloaded next run; a write word in the body always wins. Analytics beacons are dropped,
+  not counted as writes. An edge is a `write` only when a request it sent was a write.
+  `pending-writes.jsonl` rows carry a `kind`: `write` (a request was blocked), `risky-name`
+  (a money, messaging or deletion name, held unclicked) or `write-verb` (a Save-like name that
+  sent nothing: a next step to capture once).
+- **Session loss stops the run.** A sign-in page or a session-ended notice mid-walk throws
+  `SessionLost`: the node goes back on the frontier and `explore` exits 3 (`BLOCKED`, or waits
+  for a new login with `--relogin-wait`). A transient error (5xx, 429, a "service unavailable"
+  page, a timeout) is retried with doubling backoff (`--retries`, `--backoff-ms`). A node given up
+  on carries `gapReason: { code, retryable, message }` (`transient`, `replay-not-found`,
+  `http-auth`, `http-4xx`, `write-only`, `invariant`, ...); `O requeue --gaps` puts every
+  retryable one back.
+- **Websocket capture.** Every socket frame is recorded per node; sent calls are paired with
+  their answers (by id, else name) and saved under `nodes/<id>/ws/`, listed as `wsReads` in
+  `inventory.json`. A sent call that is not a read is dropped in the browser and queued like an
+  HTTP write (`--ws-guard off` only records).
+- **The per-node invariant.** A node closes only when every element the probe found is exactly
+  one row: an edge with its child, a fired result (`inert`, `write-attempt`, a native dialog, a
+  download) or a known unfired reason. Otherwise it stays open (`invariant` gap, retryable).
+
+**Scope, verify, report.** `O scope --map scope.json` tags every node with a component id from
+ordered rules (URL, title, heading, breadcrumb, label, kind, template; first match wins, then
+template and parent inheritance); `status`, `tree`, `compare`, `verify` and `report` take
+`--scope`. `O verify --ref <ref> --clone <clone> [--scope id]` runs Phase D per matched node
+pair (section 6) and exits 1 when any pair fails; `O report --scope id` writes the table of each
+reference node, its clone node, every check and its reason, and every ref-only node with why.
 
 Safety is mechanical (`scripts/orchestrator/safety.mjs`): session-ending names are never
 clicked; money, messaging, deletion and metered (credit, token) names are queued in
@@ -406,6 +447,25 @@ For every element on every page, before it is done:
 4. **Widths**: the width sweep (`scripts/qa/width_sweep.mjs`, 1024 to 2560 plus N-1 / N / N+1
    at breakpoints) and the structural label audit (`scripts/qa/struct_audit.mjs`): no invented
    or missing bar item, heading, table header or button at any width.
+
+**`O verify` runs all of it per node pair** (`scripts/orchestrator/verify.mjs`): each reference
+node paired with a clone node, the clone node reached by its replay route, each check a record in
+`<clone>/verify/<node>/<check>.json`:
+
+| check | compares | fails on |
+|---|---|---|
+| `pixels` | saved screenshot vs the clone's, same viewport and DPR, `masks.json` applied | any unmasked differing pixel; counted per landmark and region |
+| `structure` | saved AX tree (`aria.yml`) vs the clone's: roles, names, states, order | a missing, invented or reordered entry |
+| `style` | `styles.json` vs the clone's manifest, elements matched by role, name and nth: font family, size, weight, line height, colour, background, border, radius, padding, margin, width, height, gap, box shadow | a property beyond its ceiling in `--styles-allow` (default: equal) |
+| `human_eye` | `qa/human_eye_lib.mjs` on the reached node; `--dead-controls` clicks every enabled control from a fresh reach, writes aborted | any finding, any dead enabled control |
+| `widths` | `widths.json` labels vs the clone's at the same widths | an item that differs at some width beyond what differs at the capture width (that is `structure`'s) |
+| `api` | captured HTTP reads vs the clone's requests; websocket reads vs their HTTP mirrors in `--ws-map` (call name -> method + path) | a missing operation or field; `ws call not mirrored` |
+| `writes` | `write_roundtrip.mjs` for the pair's `--writes` rows | a failed round trip; a write with no row is skipped, so not verified |
+
+An overlay or modal node is judged on its own region: pixels on its bounding box, structure,
+style, widths and human eye on its subtree. A reference node walked before a check existed (no
+`styles.json`, no `widths.json`) is skipped with `ref style not captured` / `ref widths not
+captured`, never passed: re-walk it.
 
 The five QA scripts (`scripts/qa/`, each writes its check record; each is proven by eval
 `X-QA` to fail on its defect), plus `frame_diff.mjs` for video-mode builds (eval `X-FRAME`), and when they run, so they cost what they are worth:

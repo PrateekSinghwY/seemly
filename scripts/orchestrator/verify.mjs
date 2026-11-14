@@ -1,21 +1,29 @@
 // Phase D per node pair (SKILL.md sections 0.4 and 6, reference/graph.md "The closed loop" step
 // 3b). Every reference node `pairNodes` matched to a clone node is checked against the saved
-// reference capture and the live clone node, reached by its replay route on the clone graph:
+// reference capture and the live clone node, reached by its replay route on the clone graph.
+// An overlay or modal node is judged on its own region: its bounding box for pixels, its AX
+// subtree for structure, style, widths and the human eye, never the page under it.
 //
 //   pixels     reference screenshot vs clone screenshot, same viewport and DPR, masks applied;
 //              differing pixels counted per region (landmarks, plus masks.json regions)
 //   structure  the saved reference AX tree (aria.yml) vs the clone's: roles, names, states, order
-//   human_eye  scripts/qa/human_eye.mjs on the clone page, run as the skill runs it
+//   style      the reference's computed-style manifest (styles.json) vs the clone's, per element
+//              matched by role and name: equal, or within a styles-allow.json ceiling
+//   human_eye  qa/human_eye_lib.mjs (what human_eye.mjs runs) on the clone node; with
+//              `deadControls`, every enabled control is clicked from a fresh reach, writes aborted
+//   widths     structural labels at the reference's capture width and every sweep width
+//              (widths.json) vs the clone's at the same widths
 //   api        the reference node's captured reads vs the clone's requests on that node: every
-//              operation, its query keys, request body fields and response fields
+//              operation, its query keys, request body fields and response fields; websocket
+//              reads against the clone's HTTP mirrors named in ws-map.json
 //   writes     scripts/qa/write_roundtrip.mjs on the clone, for nodes with write edges or
 //              pending writes, from the rows of a writes spec
 //
-// Each check writes a record in the check-record shape ({ ran, count, status, reason, at }, the
-// shape scripts/lib/check-record.mjs writes) plus a detail file under
-// <clone dir>/verify/<clone node>/, and the clone graph node gets
-// verify: { ref, pixels, structure, human_eye, api, writes, passed, at }.
-// A node is verified only when every applicable check passed with its record on disk.
+// Each check writes a record through scripts/lib/check-record.mjs ({ ran, count, status, reason,
+// at }) plus a detail file under <clone dir>/verify/<clone node>/, and the clone graph node gets
+// verify: { ref, <each check>, passed, at }. A node is verified only when every applicable check
+// passed with its record on disk. A reference capture that predates a check (no styles.json, no
+// widths.json) skips it with that reason, never passes it.
 
 import { execFile } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -24,17 +32,20 @@ import { fileURLToPath } from "node:url";
 import { deflateSync, inflateSync } from "node:zlib";
 import * as zlib from "node:zlib";
 
+import { writeCheckRecord } from "../lib/check-record.mjs";
 import { REPO, playwright, settle } from "../lib/pw.mjs";
 import { keyPaths, template } from "../qa/api_diff.mjs";
-import { slug } from "../qa/labels.mjs";
+import { deadControls, inspect, unnamed } from "../qa/human_eye_lib.mjs";
+import { readLabels } from "../qa/labels.mjs";
 import { pairNodes } from "./compare.mjs";
 import { UNSCOPED } from "./graph.mjs";
 import { open, save } from "./store.mjs";
+import { cropImage, readStylesAllow, shiftRects, styleDiff, styleReason, unionRect, widthsDiff, widthsReason, wsDiff, wsReason } from "./verify-checks.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const QA = join(here, "..", "qa");
 
-export const CHECKS = ["pixels", "structure", "human_eye", "api", "writes"];
+export const CHECKS = ["pixels", "structure", "style", "human_eye", "widths", "api", "writes"];
 const NA = "not applicable";
 
 // ---------- PNG (no dependency: the repo has no pixelmatch or pngjs) ----------
@@ -353,17 +364,11 @@ function apiReason(d) {
 
 // ---------- records ----------
 
-const STATUSES = new Set(["pass", "fail", "skipped"]);
-
-/** One check record in the scripts/lib/check-record.mjs shape, in a node's verify dir, plus its detail. */
-export function writeRecord(dir, name, { ran, count, status, reason = null }, detail) {
-  if (!STATUSES.has(status)) throw new Error(`check record ${name}: unknown status ${status}`);
-  if (status === "skipped" && ran) throw new Error(`check record ${name}: a skip cannot have run`);
-  mkdirSync(dir, { recursive: true });
-  const rec = { ran: Boolean(ran), count, status, reason, at: new Date().toISOString() };
-  writeFileSync(join(dir, `${name}.json`), JSON.stringify(rec, null, 2) + "\n");
+/** One check record (scripts/lib/check-record.mjs, written into the node's verify dir), plus its detail. */
+export function writeRecord(dir, name, rec, detail) {
+  const out = writeCheckRecord(name, rec, dir);
   if (detail !== undefined) writeFileSync(join(dir, `${name}.detail.json`), JSON.stringify(detail, null, 1) + "\n");
-  return rec;
+  return out;
 }
 
 const notApplicable = (why) => ({ ran: false, count: 0, status: "skipped", reason: `${NA}: ${why}` });
@@ -434,7 +439,7 @@ export function report(cloneDir, scope) {
   const s = scopePairs(doc, scope);
   const c = verifyCounts(cloneDir, scope);
   const L = [`# Phase D report${scope ? `: ${scope}` : ""}`, "", `${countsLine(c)}. Pairs from ${doc.at}.`, ""];
-  L.push("## Built: reference node -> clone node", "", "| reference node | clone node | pixels | structure | human eye | api | writes | verified | reason |", "|---|---|---|---|---|---|---|---|---|");
+  L.push("## Built: reference node -> clone node", "", "| reference node | clone node | pixels | structure | style | human eye | widths | api | writes | verified | reason |", "|---|---|---|---|---|---|---|---|---|---|---|");
   for (const p of s.pairs) {
     const n = graph.nodes[p.clone.id];
     const v = n?.verify?.ref === p.ref.id ? n.verify : null;
@@ -570,20 +575,6 @@ function runQa(script, args, cwd, recordName) {
   });
 }
 
-/** human_eye.mjs over every clone page in one browser; findings per URL from its own output files. */
-async function humanEye(urls, runDir, { width, allowFile }) {
-  if (!urls.length) return new Map();
-  const args = [...urls.flatMap((u) => ["--url", u]), "--width", String(width)];
-  if (allowFile) args.push("--allow", allowFile);
-  const r = await runQa("human_eye.mjs", args, runDir, "human_eye_qa");
-  const out = new Map();
-  for (const u of urls) {
-    const f = join(runDir, "d", "qa", "human-eye", `${slug(u)}.json`);
-    out.set(u, existsSync(f) ? { findings: JSON.parse(readFileSync(f, "utf8")), record: r.record } : { error: r.out.trim().split("\n").slice(-3).join(" ") || `exit ${r.code}` });
-  }
-  return out;
-}
-
 const writeRowsFor = (rows, pair) => rows.filter((w) => {
   if (w.node) return [w.node].flat().some((x) => x === pair.ref.id || x === pair.clone.id);
   if (w.at) {
@@ -610,13 +601,53 @@ function loadJsonl(p) {
   return existsSync(p) ? readFileSync(p, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
 }
 
+const readJson = (p) => (p && existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) : null);
+
+/** An overlay's box on the clone page (viewport CSS px), or null when it is not there. */
+async function boxOf(page, css) {
+  if (!css) return null;
+  const b = await page.locator(`css=${css}`).first().boundingBox().catch(() => null);
+  return b && b.width >= 1 && b.height >= 1 ? b : null;
+}
+
+/** The clone's structural labels at each width, scoped like the reference; the viewport put back. */
+async function labelsAtWidths(page, widths, height, scopeCss) {
+  const vp = page.viewportSize();
+  const out = {};
+  try {
+    for (const w of widths) {
+      await page.setViewportSize({ width: w, height });
+      await page.waitForTimeout(250);
+      out[w] = await page.evaluate(readLabels, { scopeCss }).catch(() => null);
+    }
+  } finally {
+    if (vp) await page.setViewportSize(vp).catch(() => {});
+  }
+  return out;
+}
+
+/** The reference node's websocket reads, from inventory.json `wsReads` and the frames under ws/. */
+function refWsReads(art, inv) {
+  return (inv?.wsReads ?? [])
+    .filter((w) => w.verdict !== "write" && w.file && existsSync(join(art, "ws", w.file)))
+    .map((w) => {
+      const f = JSON.parse(readFileSync(join(art, "ws", w.file), "utf8"));
+      return { name: w.name, sent: f.sent, received: f.received };
+    });
+}
+
 /**
  * Phase D over the pairs of a reference walk and a clone walk. Options: `scope`, `node` (a ref or
  * clone node id), `masks` (masks.json), `writes` (write_roundtrip rows, each with `node` or `at`),
- * `refPrefix`/`clonePrefix` (API path prefixes), `dpr`, `height` (viewport), `api`/`web` (clone
- * bases for the round trip). Returns the per-pair results; saves records, pairs.json and the graph.
+ * `stylesAllow` (styles-allow.json), `wsMap` (ws-map.json), `deadControls` (click every enabled
+ * control of every clone node, writes aborted), `refPrefix`/`clonePrefix` (API path prefixes),
+ * `dpr`, `height` (viewport), `api`/`web` (clone bases for the round trip). Returns the per-pair
+ * results; saves records, pairs.json and the graph.
  */
-export async function verify({ refDirs, cloneDir, scope, node, masks: masksFile, writes: writesFile, refPrefix = "", clonePrefix = "", dpr = 1, height = 900, api, web, log = (s) => console.error(s) } = {}) {
+export async function verify({
+  refDirs, cloneDir, scope, node, masks: masksFile, writes: writesFile, stylesAllow: stylesAllowFile, wsMap: wsMapFile, deadControls: dead = false,
+  refPrefix = "", clonePrefix = "", dpr = 1, height = 900, api, web, log = (s) => console.error(s),
+} = {}) {
   refDirs = [refDirs].flat();
   const doc = pairNodes(refDirs, [cloneDir]);
   writePairs(cloneDir, doc);
@@ -624,6 +655,16 @@ export async function verify({ refDirs, cloneDir, scope, node, masks: masksFile,
   if (node) pairs = pairs.filter((p) => p.ref.id === node || p.clone.id === node);
   const cfg = masksFile ? JSON.parse(readFileSync(masksFile, "utf8")) : {};
   const writeRows = writesFile ? JSON.parse(readFileSync(writesFile, "utf8")) : [];
+  const stylesAllow = readStylesAllow(readJson(stylesAllowFile) ?? {});
+  const wsMap = readJson(wsMapFile) ?? {};
+  const eyeAllow = cfg.humanEye?.allow ?? [];
+  for (const a of eyeAllow) if (!a.reason) throw new Error(`humanEye allow entry ${a.kind} ${a.match} has no reason`);
+  const eyeAllowed = (f) => eyeAllow.some((a) => a.kind === f.kind && (f.where ?? "").includes(a.match));
+  const widthAllow = new Set((cfg.widths?.allow ?? []).map((r) => {
+    if (!r.reason) throw new Error(`widths allow entry ${r.category}|${r.label} has no reason`);
+    return `${r.category}|${r.label}`;
+  }));
+  const ignore = cfg.structure?.ignore ?? [];
   const g = open(cloneDir);
   const origin = g.data.meta.origin ?? (() => {
     const any = Object.values(g.data.nodes).find((n) => n.entry);
@@ -635,6 +676,7 @@ export async function verify({ refDirs, cloneDir, scope, node, masks: masksFile,
   try {
     ({ dismissOnLoad: dismiss } = await import("./explore.mjs"));
   } catch {}
+  const { styleManifest } = await import("./page-probe.mjs");
 
   const runs = join(cloneDir, "verify", "_runs");
   const refShot = (p) => {
@@ -648,15 +690,6 @@ export async function verify({ refDirs, cloneDir, scope, node, masks: masksFile,
       return 1440;
     }
   };
-
-  let allowFile = null;
-  if (cfg.humanEye?.allow?.length) {
-    allowFile = join(runs, "human-eye-allow.json");
-    mkdirSync(runs, { recursive: true });
-    writeFileSync(allowFile, JSON.stringify(cfg.humanEye.allow));
-  }
-  const firstArt = pairs.length ? refShot(pairs[0]).art : null;
-  const eye = await humanEye([...new Set(pairs.map((p) => g.node(p.clone.id).href ?? p.clone.url))], join(runs, "human_eye"), { width: firstArt ? widthOf(firstArt) : 1440, allowFile });
 
   const { chromium } = pairs.length ? await playwright() : {};
   const browser = pairs.length ? await chromium.launch() : null;
@@ -672,6 +705,7 @@ export async function verify({ refDirs, cloneDir, scope, node, masks: masksFile,
         writeRecord(out, name, rec, detail);
         v[name] = { status: rec.reason?.startsWith(NA) ? "n/a" : rec.status, reason: rec.reason, ...extra };
       };
+      const skip = (name, reason, detail) => put(name, { ran: false, count: 0, status: "skipped", reason }, detail);
       const shotPath = art && join(art, "screenshot.png");
       const width = art && existsSync(shotPath) ? widthOf(art) : 1440;
       const full = rn.kind === "page";
@@ -690,44 +724,71 @@ export async function verify({ refDirs, cloneDir, scope, node, masks: masksFile,
       } catch (e) {
         reachError = e.message.split("\n")[0];
       }
+      // An overlay or modal is judged on its own region and AX subtree, not the page under it.
+      const overlay = Boolean(scopeCss) && cn.kind !== "page";
+      const refStyles = readJson(art && join(art, "styles.json"));
 
       if (reachError) {
-        for (const c of CHECKS.filter((c) => c !== "human_eye")) put(c, { ran: false, count: 0, status: "skipped", reason: `clone node not reached: ${reachError}` });
+        for (const c of CHECKS) skip(c, `clone node not reached: ${reachError}`);
       } else {
+        // computed style, read before anything moves the pointer (the walker read it as reached)
+        if (!refStyles) skip("style", "ref style not captured: re-walk the node with this walker");
+        else {
+          const cloneStyles = await page.evaluate(styleManifest, { scopeCss }).catch(() => null);
+          writeFileSync(join(out, "clone.styles.json"), JSON.stringify(cloneStyles ?? {}));
+          const d = styleDiff(refStyles, cloneStyles, { allow: stylesAllow, ignore });
+          put("style", { ran: true, count: d.matched, status: d.passed ? "pass" : "fail", reason: styleReason(d) }, d);
+        }
+
         // pixels
-        if (!shotPath || !existsSync(shotPath)) put("pixels", { ran: false, count: 0, status: "skipped", reason: "no reference screenshot: re-capture the node" });
+        if (!shotPath || !existsSync(shotPath)) skip("pixels", "no reference screenshot: re-capture the node");
         else {
           await page.mouse.move(0, 0).catch(() => {});
           const buf = await page.screenshot({ fullPage: full, timeout: 20000 });
           writeFileSync(join(out, "clone.png"), buf);
           copyFileSync(shotPath, join(out, "ref.png"));
-          const masks = [];
+          let masks = [];
           for (const m of forPair(cfg.masks, pair)) {
             if (m.selector) masks.push(...(await rectsOf(page, m.selector, full)));
             else masks.push({ x: m.x, y: m.y, width: m.width, height: m.height });
           }
-          const regions = await landmarks(page, full);
+          let regions = await landmarks(page, full);
           for (const r of forPair(cfg.regions, pair)) {
             if (r.selector) regions.push(...(await rectsOf(page, r.selector, full)).map((x) => ({ ...x, name: r.name ?? r.selector })));
             else regions.push({ name: r.name, x: r.x, y: r.y, width: r.width, height: r.height });
           }
-          const d = pixelDiff(decodePng(readFileSync(shotPath)), decodePng(buf), { masks, regions, dpr, threshold: cfg.threshold ?? 0.1 });
+          let refImg = decodePng(readFileSync(shotPath));
+          let cloneImg = decodePng(buf);
+          let crop = null;
+          if (overlay) {
+            const cloneBox = await boxOf(page, scopeCss);
+            crop = unionRect(refStyles?.scopeRect ?? null, cloneBox);
+            if (crop) {
+              regions.unshift({ name: `${cn.kind} "${String(cn.label ?? "").slice(0, 40)}"`, ...(cloneBox ?? crop) });
+              refImg = cropImage(refImg, crop, dpr);
+              cloneImg = cropImage(cloneImg, crop, dpr);
+              masks = shiftRects(masks, crop);
+              regions = shiftRects(regions, crop);
+              writeFileSync(join(out, "ref.crop.png"), encodePng(refImg));
+              writeFileSync(join(out, "clone.crop.png"), encodePng(cloneImg));
+            }
+          }
+          const d = pixelDiff(refImg, cloneImg, { masks, regions, dpr, threshold: cfg.threshold ?? 0.1 });
           writeFileSync(join(out, "diff.png"), encodePng(d.image));
           const max = cfg.maxDiffPixels ?? 0;
           const { image, ...detail } = d;
           put("pixels", {
             ran: true, count: d.differing, status: d.differing > max ? "fail" : "pass",
-            reason: d.differing > max ? `${d.differing} differing pixel(s)${d.sizes.ref.join("x") !== d.sizes.clone.join("x") ? ` (size ref ${d.sizes.ref.join("x")}, clone ${d.sizes.clone.join("x")})` : ""}; by region: ${d.regions.slice(0, 6).map((r) => `${r.name} ${r.differing}`).join(", ")}` : null,
-          }, { ...detail, masks, regions, viewport: { width, height, dpr }, fullPage: full }, { differing: d.differing, regions: d.regions.slice(0, 10) });
+            reason: d.differing > max ? `${d.differing} differing pixel(s)${crop ? " in the overlay region" : ""}${d.sizes.ref.join("x") !== d.sizes.clone.join("x") ? ` (size ref ${d.sizes.ref.join("x")}, clone ${d.sizes.clone.join("x")})` : ""}; by region: ${d.regions.slice(0, 6).map((r) => `${r.name} ${r.differing}`).join(", ")}` : null,
+          }, { ...detail, masks, regions, crop, viewport: { width, height, dpr }, fullPage: full }, { differing: d.differing, regions: d.regions.slice(0, 10) });
         }
 
-        // structure and accessibility tree
+        // structure and accessibility tree (the overlay's subtree when it is one)
         const ariaPath = art && join(art, "aria.yml");
-        if (!ariaPath || !existsSync(ariaPath) || !readFileSync(ariaPath, "utf8").trim()) put("structure", { ran: false, count: 0, status: "skipped", reason: "no reference AX tree: re-capture the node" });
+        if (!ariaPath || !existsSync(ariaPath) || !readFileSync(ariaPath, "utf8").trim()) skip("structure", "no reference AX tree: re-capture the node");
         else {
           const cloneAria = await page.locator(scopeCss ? `css=${scopeCss}` : "body").ariaSnapshot({ timeout: 20000 }).catch(() => "");
           writeFileSync(join(out, "clone.aria.yml"), cloneAria);
-          const ignore = cfg.structure?.ignore ?? [];
           const d = diffAria(parseAria(readFileSync(ariaPath, "utf8"), { ignore }), parseAria(cloneAria, { ignore }));
           const bad = d.missing.length || d.extra.length || d.order;
           put("structure", {
@@ -736,27 +797,58 @@ export async function verify({ refDirs, cloneDir, scope, node, masks: masksFile,
           }, d);
         }
 
-        // api: the reference node's captured reads vs the clone's requests on this node
-        const invPath = art && join(art, "inventory.json");
-        const inv = invPath && existsSync(invPath) ? JSON.parse(readFileSync(invPath, "utf8")) : null;
+        // human eye, in place on the reached node (scoped to the overlay); dead controls on request
+        const eyeScope = overlay ? scopeCss : null;
+        let findings = [...(await page.evaluate(inspect, { scopeCss: eyeScope }).catch(() => [])), ...(await unnamed(page, { scopeCss: eyeScope }).catch(() => []))];
+        let deadNote = "not run (pass --dead-controls)";
+        if (dead) {
+          const dctx = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: dpr });
+          await dctx.route("**/*", (r) => (["GET", "HEAD", "OPTIONS"].includes(r.request().method()) ? r.fallback() : r.abort("blockedbyclient")));
+          const dp = await dctx.newPage();
+          try {
+            const reset = async (p) => (await reachClone(p, g, cn, { dismiss })).scopeCss;
+            const first = await reset(dp);
+            findings.push(...(await deadControls(dp, { reset, scopeCss: overlay ? first : null })));
+            deadNote = "run, writes aborted";
+          } catch (e) {
+            deadNote = `did not run: ${e.message.split("\n")[0]}`;
+          } finally {
+            await dctx.close().catch(() => {});
+          }
+        }
+        findings = findings.filter((f) => !eyeAllowed(f));
+        if (dead && deadNote.startsWith("did not run")) skip("human_eye", `dead-control sweep ${deadNote}`, { findings });
+        else put("human_eye", { ran: true, count: findings.length, status: findings.length ? "fail" : "pass", reason: findings.length ? `${findings.length} finding(s): ${findings.slice(0, 5).map((f) => `${f.kind} ${f.detail}`).join(" | ")}` : null }, { findings, scope: eyeScope ?? "page", deadControls: deadNote });
+
+        // api: the reference node's captured reads (HTTP and websocket) vs the clone's requests
+        const inv = readJson(art && join(art, "inventory.json"));
         const refCalls = (inv?.requests ?? []).map((r) => ({
           method: r.method, url: r.url,
           res: r.file && existsSync(join(art, "xhr", r.file)) ? parse(readFileSync(join(art, "xhr", r.file), "utf8")) : undefined,
           req: r.reqFile && existsSync(join(art, "xhr", r.reqFile)) ? parse(readFileSync(join(art, "xhr", r.reqFile), "utf8")) : undefined,
         }));
+        const refWs = inv ? refWsReads(art, inv) : [];
         const cloneCalls = (await Promise.all(bodies)).filter(Boolean);
-        if (!inv) put("api", { ran: false, count: 0, status: "skipped", reason: "no reference inventory: re-capture the node" });
-        else if (!refCalls.length) put("api", notApplicable("the reference node made no captured reads"), { cloneCalls: cloneCalls.map((c) => `${c.method} ${c.url}`) });
+        const callList = { refCalls: refCalls.map((c) => `${c.method} ${c.url}`), refWs: refWs.map((w) => w.name), cloneCalls: cloneCalls.map((c) => `${c.method} ${c.url}`) };
+        if (!inv) skip("api", "no reference inventory: re-capture the node");
+        else if (!refCalls.length && !refWs.length) put("api", notApplicable("the reference node made no captured reads"), callList);
         else {
-          const d = apiDiff(refCalls, cloneCalls, { refPrefix, clonePrefix, ignore: cfg.api?.ignore ?? [] });
-          put("api", { ran: true, count: d.refOps, status: d.passed ? "pass" : "fail", reason: d.passed ? null : apiReason(d) }, { ...d, refCalls: refCalls.map((c) => `${c.method} ${c.url}`), cloneCalls: cloneCalls.map((c) => `${c.method} ${c.url}`) });
+          const d = refCalls.length ? apiDiff(refCalls, cloneCalls, { refPrefix, clonePrefix, ignore: cfg.api?.ignore ?? [] }) : null;
+          const w = refWs.length ? wsDiff(refWs, cloneCalls, wsMap, { clonePrefix }) : null;
+          const ok = (!d || d.passed) && (!w || w.passed);
+          put("api", { ran: true, count: (d?.refOps ?? 0) + (w?.ops ?? 0), status: ok ? "pass" : "fail", reason: ok ? null : [d && apiReason(d), w && wsReason(w)].filter(Boolean).join(" | ") }, { http: d, ws: w, ...callList });
+        }
+
+        // widths: the reference's labels per width vs the clone's at the same widths
+        const refWidths = readJson(art && join(art, "widths.json"));
+        const at = Object.keys(refWidths?.widths ?? {}).filter((w) => refWidths.widths[w]).map(Number);
+        if (!at.length) skip("widths", "ref widths not captured: re-walk the node with this walker");
+        else {
+          const cloneAt = await labelsAtWidths(page, at, refWidths.height ?? height, refWidths.scope ? scopeCss : null);
+          const d = widthsDiff(refWidths, cloneAt, widthAllow);
+          put("widths", { ran: true, count: d.compared, status: d.passed ? "pass" : "fail", reason: widthsReason(d) }, { ...d, widths: at, clone: cloneAt });
         }
       }
-
-      // human eye on the clone page
-      const he = eye.get(cn.href ?? pair.clone.url);
-      if (!he || he.error) put("human_eye", { ran: false, count: 0, status: "skipped", reason: `human_eye.mjs did not run: ${he?.error ?? "no result"}` });
-      else put("human_eye", { ran: true, count: he.findings.length, status: he.findings.length ? "fail" : "pass", reason: he.findings.length ? `${he.findings.length} finding(s): ${he.findings.slice(0, 5).map((f) => `${f.kind} ${f.detail}`).join(" | ")}` : null }, { findings: he.findings, overlay: cn.kind !== "page" ? "run on the page under the overlay" : undefined });
 
       // writes, on the clone only
       if (!reachError) {
