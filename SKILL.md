@@ -142,6 +142,9 @@ the prefix and external links are real hrefs to the standard out-of-scope page w
 GAP row each. States named in `REACH` are states
 of the page captured at T0, never a different T0. Parse it, echo it once inside the
 preflight block as `INTAKE: <fields, defaults marked>`, never ask for a missing field.
+**A bare `/seemly` (no arguments) runs `reference/autopilot.md` end to end:** it works out where
+the build stands, then runs walk → judge → scope → build → clone walk → verify → loop. It keeps the QA
+README current throughout, and it ends with the report. The human never restates the method.
 `seemly resume` means: read `discovery/LESSONS.md`, then `discovery/RESUME.md`, print
 `RESUMED FROM: <phase>.<step>`, continue. `distill` means run `distill.md`.
 
