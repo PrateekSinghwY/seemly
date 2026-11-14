@@ -37,6 +37,127 @@ export function nodeId(url, signature, state = "") {
   return "n_" + createHash("sha1").update(`${canonicalUrl(url)}\n${state}\n${signature.join("\n")}`).digest("hex").slice(0, 12);
 }
 
+// ---------- gap reasons ----------
+
+/**
+ * Why a node is a gap, as text. The walker records `gapReason: { code, retryable, message }`
+ * (explore.mjs `markGap`) and a line in `detail`; older graphs and `O gap --reason` have only
+ * `detail`; a node added out of scope may carry only its placeholder signature.
+ * `null` means no reason was recorded.
+ */
+export function gapReason(n) {
+  const r = n.gapReason;
+  if (r && typeof r === "object") return `${String(r.code ?? "gap").replace(/-/g, " ")}${r.message ? `: ${r.message}` : ""}`;
+  if (r) return String(r);
+  if (n.detail) return String(n.detail);
+  if (n.signature?.length === 1 && n.signature[0] === "out-of-scope") return "out of scope";
+  return null;
+}
+
+/**
+ * Reasons that a retry cannot change: the surface is outside the target, a human ruled it out,
+ * or reaching it costs money, a message or data. Everything else (a failed walk, a timeout, a
+ * missing reason) is worth another pass. The walker's own `retryable` flag wins when recorded,
+ * and run.mjs prefers the walker's exported rule over this fallback.
+ */
+export const NOT_RETRYABLE = /\b(out[ -]of[ -]scope|external|ruling|ruled|human|irreversible|metered|paid|billing|third[ -]party|session[- ]ending|never fire|by design|not in scope|disabled by (the )?reference|write[ -]only)\b/i;
+
+export function isRetryableReason(reason, n) {
+  if (typeof n?.gapReason?.retryable === "boolean") return n.gapReason.retryable;
+  return !reason || !NOT_RETRYABLE.test(reason);
+}
+
+// ---------- scopes ----------
+
+export const UNSCOPED = "unscoped";
+
+/** A node is in `scope` when tagged with it; "unscoped" selects untagged nodes; no scope selects all. */
+export function inScopeId(n, scope) {
+  if (!scope) return true;
+  return scope === UNSCOPED ? !n.scope : n.scope === scope;
+}
+
+/** A breadcrumb trail read from a saved AX tree (aria.yml): the names under a "breadcrumb" navigation. */
+export function breadcrumbFromAria(aria) {
+  const lines = (aria ?? "").split("\n");
+  const i = lines.findIndex((l) => /^\s*- navigation "[^"]*breadcrumb[^"]*"/i.test(l));
+  if (i < 0) return "";
+  const indent = lines[i].search(/\S/);
+  const names = [];
+  for (const l of lines.slice(i + 1)) {
+    if (l.trim() && l.search(/\S/) <= indent) break;
+    const m = /- (?:link|text|listitem)(?: "([^"]*)")?(?::\s*(.*))?$/.exec(l);
+    const name = m?.[1] ?? m?.[2];
+    if (name) names.push(name.trim());
+  }
+  return names.join(" > ");
+}
+
+const ruleRe = (v) => new RegExp(v, "i");
+
+/** Does one rule match one node? Every field the rule names must match (AND). */
+function ruleMatches(rule, n, fields) {
+  const test = (key, value) => rule[key] === undefined || [rule[key]].flat().some((p) => ruleRe(p).test(value ?? ""));
+  if (rule.kind !== undefined && ![rule.kind].flat().includes(n.kind)) return false;
+  if (rule.template !== undefined && ![rule.template].flat().includes(n.template)) return false;
+  return test("url", fields.path) && test("title", fields.title) && test("heading", fields.heading) && test("breadcrumb", fields.breadcrumb) && test("label", n.label);
+}
+
+/**
+ * Tag every node with a scope (a component id) from ordered rules; the first rule that
+ * matches wins. A rule names any of `url` (regex on path + query), `title`, `heading`,
+ * `breadcrumb`, `label` (regexes, case-insensitive), `kind` and `template` (ids); every field
+ * it names must match. Then, unless `inherit: false`, an untagged node takes the scope of the
+ * tagged members of its template (when they agree on one), and an untagged overlay or state
+ * takes its parent's (the node its cheapest route opens it from), until nothing changes.
+ * `extra(n)` supplies fields read off disk (the breadcrumb from aria.yml). Returns counts.
+ */
+export function tagScopes(g, map, extra = () => ({})) {
+  const rules = map.rules ?? [];
+  for (const r of rules) if (!r.scope) throw new Error(`scope rule without a scope: ${JSON.stringify(r)}`);
+  const nodes = Object.values(g.data.nodes);
+  for (const n of nodes) {
+    let path = "";
+    try {
+      const u = new URL(n.href ?? n.url);
+      path = u.pathname + u.search;
+    } catch {}
+    const ex = extra(n) ?? {};
+    const fields = { path, title: n.info?.title ?? ex.title, heading: n.info?.heading ?? ex.heading, breadcrumb: n.info?.breadcrumb ?? ex.breadcrumb };
+    const hit = rules.find((r) => ruleMatches(r, n, fields));
+    n.scope = hit ? hit.scope : null;
+    n.scopeBy = hit ? `rule ${rules.indexOf(hit) + 1}` : null;
+  }
+  if (map.inherit !== false) {
+    const routes = g.routes();
+    for (let changed = true; changed; ) {
+      changed = false;
+      for (const n of nodes) {
+        if (n.scope) continue;
+        const peers = new Set((g.data.templates[n.template]?.members ?? []).map((id) => g.data.nodes[id].scope).filter(Boolean));
+        if (peers.size === 1) {
+          [n.scope] = peers;
+          n.scopeBy = "template";
+          changed = true;
+          continue;
+        }
+        if (n.kind === "page") continue;
+        const path = routes[n.id]?.path ?? [];
+        const parent = path.length ? g.data.nodes[g.data.edges[path[path.length - 1]].from] : null;
+        if (parent?.scope) {
+          n.scope = parent.scope;
+          n.scopeBy = "parent";
+          changed = true;
+        }
+      }
+    }
+  }
+  const counts = {};
+  for (const n of nodes) counts[n.scope ?? UNSCOPED] = (counts[n.scope ?? UNSCOPED] ?? 0) + 1;
+  g.data.meta.scopes = { at: new Date().toISOString(), rules: rules.length, counts };
+  return counts;
+}
+
 export class Graph {
   constructor(data) {
     this.data = data ?? { version: SCHEMA_VERSION, meta: {}, nodes: {}, edges: {}, templates: {}, modules: {}, shell: null };
@@ -311,18 +432,47 @@ export class Graph {
     return this.frontier.size === 0 && !Object.values(this.data.nodes).some((n) => n.status === "expanding");
   }
 
-  stats() {
+  /** Counts for the whole graph, or for one scope (`O scope` tags; "unscoped" for untagged nodes). */
+  stats(scope) {
     const by = Object.fromEntries(STATUSES.map((s) => [s, 0]));
-    for (const n of Object.values(this.data.nodes)) by[n.status]++;
+    const nodes = Object.values(this.data.nodes).filter((n) => inScopeId(n, scope));
+    for (const n of nodes) by[n.status]++;
+    const ids = new Set(nodes.map((n) => n.id));
     return {
-      nodes: Object.keys(this.data.nodes).length,
-      edges: Object.keys(this.data.edges).length,
-      templates: Object.keys(this.data.templates).length,
-      modules: Object.keys(this.data.modules).length,
-      frontier: this.frontier.size,
+      nodes: nodes.length,
+      edges: Object.values(this.data.edges).filter((e) => ids.has(e.from) || ids.has(e.to)).length,
+      templates: new Set(nodes.map((n) => n.template)).size,
+      modules: scope ? new Set(nodes.flatMap((n) => n.modules)).size : Object.keys(this.data.modules).length,
+      frontier: scope ? nodes.filter((n) => n.status === "frontier").length : this.frontier.size,
       byStatus: by,
-      templateHistogram: Object.values(this.data.templates).map((t) => ({ id: t.id, nodes: t.members.length, inDegree: t.inDegree, built: t.built })),
+      templateHistogram: Object.values(this.data.templates)
+        .filter((t) => !scope || t.members.some((id) => ids.has(id)))
+        .map((t) => ({ id: t.id, nodes: t.members.length, inDegree: t.inDegree, built: t.built })),
     };
+  }
+
+  // ---------- gaps ----------
+
+  /**
+   * Every gap node whose reason is retryable back on the frontier (attempts reset). `reason`
+   * narrows it to gaps whose reason contains that text (case-insensitive); `retryable` decides
+   * per reason (default `isRetryableReason`). Returns the requeued nodes.
+   */
+  requeueGaps({ reason, retryable = isRetryableReason } = {}) {
+    const want = reason ? reason.toLowerCase() : null;
+    const out = [];
+    for (const n of Object.values(this.data.nodes)) {
+      if (n.status !== "gap") continue;
+      const r = gapReason(n);
+      if (want && !(r ?? "").toLowerCase().includes(want)) continue;
+      // A gap with no reason at all is retried: nothing says a retry cannot help.
+      if (r !== null && !retryable(r, n)) continue;
+      n.attempts = 0;
+      delete n.gapReason;
+      this.setStatus(n.id, "frontier", null);
+      out.push(n);
+    }
+    return out;
   }
 
   #public(n) {

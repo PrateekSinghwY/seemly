@@ -6,29 +6,37 @@
 //     init --target <url> [--prefix /path]... [--entry <url>]...  create the graph from entry pages
 //     explore [--max-nodes N] [--risky record|probe] [--allow-post <regex>]... [--read-posts off|auto]
 //             [--pace <ms>] [--relogin-wait <minutes>] [--sample K] [--only-prefix /area]...
+//             [--ws-guard block|off] [--retries N] [--backoff-ms N] [--login-pattern <regex>]
 //     visit <url>                                                  add one more entry page
-//     requeue <nodeId> | requeue --failed | gap <nodeId> --reason "..."   corrections; --failed restores give-ups
+//     requeue <nodeId> | requeue --failed | requeue --gaps [--reason <r>] | gap <nodeId> --reason "..."
+//                                                                  corrections; --gaps puts back every gap with a retryable reason
+//     scope --map <scope.json>                                     tag every node with a scope (component id)
 //     pending                                                      writes waiting for BLOCKED
 //   build phase
 //     plan [--allow-open]                                          units in dependency order
 //     next-unit                                                    claim the next unit, write its packet
 //     packet <unit>                                                rewrite one unit's packet
 //     unit-done <unit> [--verified]
+//   verify phase (Phase D)
+//     verify --ref <dir>... --clone <dir> [--scope id] [--node id] [--masks masks.json] [--writes writes.json]
+//            [--ref-prefix p] [--clone-prefix p] [--dpr 1] [--api url] [--web url]
+//     report [--clone <dir>] [--scope id] [--out report.md]        ref node -> clone node -> each check -> reason
 //   views
-//     status | tree | live | frontier | route <nodeId> | loops
-//     compare --ref <dir>... --clone <dir>... [--out diff.md]       reference walk vs clone walk
+//     status [--scope id] [--clone <dir>] | tree [--scope id] | live | frontier | route <nodeId> | loops
+//     compare --ref <dir>... --clone <dir>... [--scope id] [--out diff.md]   walk diff; writes <clone>/pairs.json
 //   (any) --dir <discovery dir>   --cdp <http://127.0.0.1:9222>   --headed
 
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import { DISCOVERY } from "../lib/pw.mjs";
 import { finish, loadState, nextUnit, packet, plan, progress, saveState, writePacket } from "./build.mjs";
-import { compare, toMarkdown } from "./compare.mjs";
-import { SessionLost, explore, readEntry } from "./explore.mjs";
+import { compare, pairNodes, toMarkdown } from "./compare.mjs";
+import { breadcrumbFromAria, isRetryableReason, tagScopes } from "./graph.mjs";
 import { open, save } from "./store.mjs";
+import { countsLine, report, verify, verifyCounts, writePairs } from "./verify.mjs";
 import { writeLive, writeTree } from "./views.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -60,6 +68,23 @@ const { values: o, positionals } = parseArgs({
     ref: { type: "string", multiple: true },
     clone: { type: "string", multiple: true },
     out: { type: "string" },
+    gaps: { type: "boolean", default: false },
+    map: { type: "string" },
+    scope: { type: "string" },
+    node: { type: "string" },
+    masks: { type: "string" },
+    writes: { type: "string" },
+    "ref-prefix": { type: "string", default: "" },
+    "clone-prefix": { type: "string", default: "" },
+    dpr: { type: "string", default: "1" },
+    height: { type: "string", default: "900" },
+    api: { type: "string" },
+    web: { type: "string" },
+    // Walker options (explore.mjs): passed only when given, so a walker without them ignores them.
+    "ws-guard": { type: "string" },
+    retries: { type: "string" },
+    "backoff-ms": { type: "string" },
+    "login-pattern": { type: "string" },
   },
 });
 const dir = o.dir;
@@ -80,17 +105,63 @@ function pendingRows() {
   return existsSync(p) ? readFileSync(p, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
 }
 
-function status(g) {
-  const s = g.stats();
+function status(g, scope) {
+  const s = g.stats(scope);
   const st = loadState(dir);
-  const pr = st.order.length ? progress(st) : null;
-  const pend = pendingRows().length;
+  const pr = st.order.length && !scope ? progress(st) : null;
+  const pend = pendingRows().filter((p) => !scope || g.data.nodes[p.node]?.scope === scope).length;
+  if (scope) say(`SCOPE   ${scope}`);
   say(`GRAPH   ${s.nodes} nodes, ${s.edges} edges, ${s.templates} templates, ${s.modules} module archetypes`);
   say(`STATUS  ${Object.entries(s.byStatus).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(" · ")}`);
-  say(`QUEUE   frontier ${s.frontier}${g.isClosed() ? " · CLOSED" : ""}${pend ? ` · ${pend} write(s) pending BLOCKED` : ""}`);
+  say(`QUEUE   frontier ${s.frontier}${!scope && g.isClosed() ? " · CLOSED" : ""}${pend ? ` · ${pend} write(s) pending BLOCKED` : ""}`);
   if (pr) say(`BUILD   ${pr.units} units: ${UNITS(pr)}`);
+  // Phase D counts come from pairs.json, the clone graph and the check records on disk.
+  const vdir = o.clone?.[0] ?? dir;
+  const c = existsSync(join(vdir, "pairs.json")) ? verifyCounts(vdir, scope) : null;
+  if (c) say(`VERIFY  ${countsLine(c)}`);
+  if (g.data.meta.scopes && !scope) say(`SCOPES  ${Object.entries(g.data.meta.scopes.counts).map(([k, v]) => `${k} ${v}`).join(" · ")}`);
+}
+
+/**
+ * Which gap reasons a requeue retries: the walker's own `gapReason(n).retryable` when explore.mjs
+ * exports it (its codes: transient, replay-not-found, http-auth ... retryable; out-of-scope,
+ * http-4xx, write-only, manual not), else the graph's default rule. A gap with no reason at all
+ * is always retried (graph.requeueGaps).
+ */
+function retryRule() {
+  if (typeof walker.gapReason !== "function") return isRetryableReason;
+  return (text, n) => {
+    const r = walker.gapReason(n);
+    return typeof r?.retryable === "boolean" ? r.retryable : isRetryableReason(text, n);
+  };
+}
+/**
+ * Walker options explore.mjs reads from its options object: the websocket guard (`wsGuard`,
+ * block | off; websocket frames are captured either way), retries with backoff, and the
+ * sign-in URL pattern. Only flags that were given are passed, so an explore.mjs that does not
+ * know one ignores it and its own default stands.
+ */
+function walkerOptions() {
+  const out = {};
+  if (o["ws-guard"] !== undefined) {
+    if (!["block", "off"].includes(o["ws-guard"])) throw new Error("--ws-guard is block or off");
+    out.wsGuard = o["ws-guard"];
+  }
+  if (o.retries !== undefined) out.retries = +o.retries;
+  if (o["backoff-ms"] !== undefined) out.backoffMs = +o["backoff-ms"];
+  if (o["login-pattern"] !== undefined) out.loginPattern = o["login-pattern"];
+  return out;
 }
 const UNITS = (pr) => ["pending", "building", "built", "verified"].map((k) => `${k} ${pr[k]}`).join(" · ");
+
+// The walker loads only for the commands that drive it, so the views, scope, compare, verify
+// and report keep working while explore.mjs is being changed. `requeue` uses its gap rule when
+// it loads and the graph's own rule when it does not.
+const WALKS = new Set(["init", "visit", "explore"]);
+let walker = {};
+if (WALKS.has(cmd)) walker = await import("./explore.mjs");
+else if (cmd === "requeue") walker = await import("./explore.mjs").catch((e) => (say(`note: explore.mjs did not load (${e.message.split("\n")[0]}); using the graph's retry rule`), {}));
+const { SessionLost, explore, readEntry } = walker;
 
 const g = open(dir, {});
 switch (cmd) {
@@ -134,6 +205,7 @@ switch (cmd) {
           pace: o.pace ? +o.pace : 0,
           sample: o.sample ? +o.sample : undefined,
           onlyPrefix: o["only-prefix"]?.length ? o["only-prefix"] : null,
+          ...walkerOptions(),
         });
         writeTree(g, dir);
         writeLive(g, dir);
@@ -163,6 +235,15 @@ switch (cmd) {
     break;
   }
   case "requeue": {
+    // --gaps: every gap whose reason is retryable (a missing reason counts as retryable),
+    // narrowed by --reason <text>.
+    if (o.gaps) {
+      const done = g.requeueGaps({ reason: o.reason, retryable: retryRule() });
+      save(g, dir);
+      for (const n of done) say(`requeued ${n.id} ${n.label}`);
+      say(`requeued ${done.length} gap node(s)`);
+      break;
+    }
     // --failed: every node a run gave up on (status gap, detail "explore failed ..."), e.g. after
     // the browser died under it.
     const ids = positionals[0] === "--failed" || o.failed
@@ -224,17 +305,57 @@ switch (cmd) {
     break;
   }
   case "compare": {
-    // compare --ref <dir>... --clone <dir>... [--out diff.md]: the walked-graph diff
-    const md = toMarkdown(compare(o.ref, o.clone));
+    // compare --ref <dir>... --clone <dir>... [--scope id] [--out diff.md]: the walked-graph diff,
+    // plus the node pairs Phase D runs on, in <first clone dir>/pairs.json.
+    if (!o.ref?.length || !o.clone?.length) throw new Error("compare needs --ref <dir>... --clone <dir>...");
+    const md = toMarkdown(compare(o.ref, o.clone, { scope: o.scope }));
+    const pairs = pairNodes(o.ref, o.clone);
+    writePairs(o.clone[0], pairs);
     if (o.out) writeFileSync(o.out, md);
     say(o.out ? `wrote ${o.out}` : md);
+    say(`pairs ${pairs.pairs.length} · ref-only ${pairs.refOnly.length} · clone-only ${pairs.cloneOnly.length} -> ${join(o.clone[0], "pairs.json")}`);
+    break;
+  }
+  case "scope": {
+    // scope --map <scope.json>: { "rules": [{ "scope": "S01", "url": "^/app/settings" }, ...], "inherit": true }
+    if (!o.map) throw new Error("scope needs --map <scope.json>");
+    const map = JSON.parse(readFileSync(o.map, "utf8"));
+    const extra = (n) => {
+      const p = n.info?.artifacts && join(dir, n.info.artifacts, "aria.yml");
+      return p && existsSync(p) ? { breadcrumb: breadcrumbFromAria(readFileSync(p, "utf8")) } : {};
+    };
+    const counts = tagScopes(g, map, extra);
+    g.data.meta.scopes.map = o.map;
+    save(g, dir);
+    say(Object.entries(counts).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${k.padEnd(12)} ${v}`).join("\n"));
+    break;
+  }
+  case "verify": {
+    if (!o.ref?.length || !o.clone?.length) throw new Error("verify needs --ref <ref graph dir>... --clone <clone graph dir>");
+    const r = await verify({
+      refDirs: o.ref, cloneDir: o.clone[0], scope: o.scope, node: o.node, masks: o.masks, writes: o.writes,
+      refPrefix: o["ref-prefix"], clonePrefix: o["clone-prefix"], dpr: +o.dpr, height: +o.height, api: o.api, web: o.web,
+      log: say,
+    });
+    say(`VERIFY  ${countsLine(verifyCounts(o.clone[0], o.scope))}`);
+    if (r.results.some((x) => !x.verify.passed)) process.exitCode = 1;
+    break;
+  }
+  case "report": {
+    const cdir = o.clone?.[0] ?? dir;
+    const md = report(cdir, o.scope);
+    const out = o.out ?? join(cdir, "verify", `report${o.scope ? `-${o.scope}` : ""}.md`);
+    mkdirSync(dirname(out), { recursive: true });
+    writeFileSync(out, md);
+    say(`wrote ${out}`);
+    say(`VERIFY  ${countsLine(verifyCounts(cdir, o.scope))}`);
     break;
   }
   case "status":
-    status(g);
+    status(g, o.scope);
     break;
   case "tree":
-    say(writeTree(g, dir));
+    say(writeTree(g, dir, { scope: o.scope }));
     break;
   case "live":
     say(writeLive(g, dir));
@@ -252,7 +373,7 @@ switch (cmd) {
     for (const c of g.loops()) say(c.map((id) => g.data.nodes[id].label).join("  <->  "));
     break;
   default:
-    say(readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 22).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
+    say(readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1).filter((l, i, all) => all.slice(0, i + 1).every((x) => x.startsWith("//"))).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
     process.exitCode = cmd ? 2 : 0;
 }
 

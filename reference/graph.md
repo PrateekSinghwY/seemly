@@ -216,7 +216,10 @@ loop, start to finish, every time. The human should never have to restate it.
    backtrack, and it revisits shared surfaces. The queue reaches each node exactly once, by
    its shortest route, and dedupe by node id and template stops any surface being walked
    twice. Typed input, drag, uploads and states behind a write are explored by hand and fed
-   back with `O requeue` / `O gap`, so the walker's blind spots become nodes too.
+   back with `O requeue` / `O gap`, so the walker's blind spots become nodes too. After each
+   walk, `O requeue --gaps` puts every gap with a retryable reason back on the frontier; the
+   walk is not closed while one is left. `O scope --map <scope.json>` tags each node with its
+   component, so every count below can be read per scope.
 2. **The work list is the graph, never a hand checklist.** Every item on a gap list or
    checklist maps to a node id, or becomes one: add it as an entry and walk it. Building runs
    off `O plan` / `next-unit`. Each unit agent gets its node packet and runs the full per-node
@@ -225,10 +228,15 @@ loop, start to finish, every time. The human should never have to restate it.
 3. **Walk the clone to CLOSED** on an isolated copy (own DB copy, own ports), with writes
    allowed.
 3b. **Phase D on every built node** (SKILL.md section 0.4): pixels, structure and accessibility tree,
-   style, human eye, widths, network (`api_diff.mjs`), writes. A node without passing check
-   records is `needs-verify`, never built.
+   style, human eye, widths, network (`api_diff.mjs`), writes. `O verify --ref <ref> --clone
+   <clone> [--scope id]` runs pixels, structure and AX tree, human eye, network and writes per
+   matched node pair and writes a check record per channel under `<clone>/verify/<node>/`;
+   style and widths still run by their own scripts. A node without passing check records is
+   `needs-verify`, never built.
 4. **Diff the two graphs:** `O compare --ref <ref> --clone <clone>`. Confirm every line by
-   hand. Each confirmed line is fixed, and its node goes back on the queue.
+   hand. Each confirmed line is fixed, and its node goes back on the queue. Compare also writes
+   `<clone>/pairs.json`: matched node pairs, ref-only and clone-only nodes, which verify and
+   report read.
 5. **Repeat steps 3 and 4 until compare has no unconfirmed line.** By then every reference
    node must be built, configured, or closed as GAP / bounded / blocked, with its reason on
    the node.
@@ -237,4 +245,44 @@ loop, start to finish, every time. The human should never have to restate it.
    that needed a new capture is marked `needs-capture`, never counted as covered. The loop
    resumes at step 1 for those nodes after re-login (`export-login.mjs`).
 7. **Every count reported** (nodes, closed, built, gaps) comes from `graph.json` plus the Phase D
-   check records, never from a checklist tally or a test count.
+   check records, never from a checklist tally or a test count. `O status [--scope id]` prints
+   `verified N / built M / ref-only K`, and `O report --scope id` writes the table of what is
+   built end to end and what cannot be built, with each reason.
+
+## Commands
+
+`O` is `node <skill>/scripts/orchestrator/run.mjs`, run from the clone repo's root. Every
+command takes `--dir <graph dir>` (default `never_to_be_pushed/discovery`).
+
+| command | what it does |
+|---|---|
+| `O init --target <url> [--prefix /p]... [--entry <url>]...` | create the graph from entry pages |
+| `O explore [--max-nodes N] [--only-prefix /area]... [--ws-guard block\|off] [--retries N] [--login-pattern re]` | walk to CLOSED, one chunk at a time |
+| `O visit <url>` | add one more entry page |
+| `O requeue <node>` · `O requeue --failed` | put one node, or every give-up of a dead browser, back on the frontier |
+| `O requeue --gaps [--reason <text>]` | put every gap with a retryable reason back (the walker's `gapReason`; a gap with no reason counts as retryable) |
+| `O gap <node> --reason "..."` | close a node as GAP with a reason |
+| `O scope --map <scope.json>` | tag every node with a scope from ordered rules (below) |
+| `O status [--scope id]` · `O tree [--scope id]` · `O live` · `O frontier` · `O route <node>` · `O loops` · `O pending` | views; status adds `VERIFY verified N / built M / ref-only K` once pairs exist |
+| `O plan` · `O next-unit` · `O packet <unit>` · `O unit-done <unit> [--verified]` | build units in dependency order |
+| `O compare --ref <dirs> --clone <dirs> [--scope id] [--out diff.md]` | walked-graph diff, plus `<clone>/pairs.json` |
+| `O verify --ref <dirs> --clone <dir> [--scope id] [--node id] [--masks masks.json] [--writes writes.json] [--ref-prefix p] [--clone-prefix p] [--dpr 1]` | Phase D per node pair; exits 1 when any pair fails |
+| `O report [--clone <dir>] [--scope id] [--out file]` | markdown: ref node -> clone node -> each check -> reason, then every ref-only node with its reason |
+
+**scope.json:** `{ "rules": [{ "scope": "S01", "url": "^/app/timecards" }, { "scope": "S02",
+"heading": "^Schedule", "kind": "page" }, ...], "inherit": true }`. A rule names any of `url`
+(regex on path and query), `title`, `heading`, `breadcrumb`, `label` (regexes), `kind`,
+`template`; all it names must match, and the first matching rule wins. With `inherit`, an
+untagged node takes the scope of its template's tagged members, and an untagged overlay or
+state takes its parent's. Untagged nodes are `unscoped`.
+
+**masks.json** (verify): `{ "masks": [{ "selector": ".person-name", "reason": "synthetic name" },
+{ "x": 0, "y": 120, "width": 300, "height": 20, "node": "n_..." }], "regions": [{ "name":
+"grid", "selector": "[role=grid]" }], "maxDiffPixels": 0, "threshold": 0.1, "structure":
+{ "ignore": ["^Last updated"] }, "api": { "ignore": ["/analytics"] }, "humanEye": { "allow":
+[...] } }`. Masks cover synthetic data (names, numbers, dates) on both screenshots; regions
+add named areas to the per-region pixel counts, which already include every landmark.
+
+**writes.json** (verify): `write_roundtrip.mjs` rows, each with `node` (a ref or clone node id)
+or `at` (a path) saying which pair it belongs to. A node with write edges or pending writes
+and no row is not verified: its writes record says which writes have no spec.

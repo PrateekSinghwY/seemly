@@ -6,11 +6,16 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { dijkstra } from "./algorithms.mjs";
+import { inScopeId } from "./graph.mjs";
 
 const VERDICT = { frontier: "open", expanding: "open", closed: "explored", built: "built", verified: "verified", gap: "GAP", bounded: "bounded" };
 
-/** The shortest-route tree from the entry nodes, as indented markdown. */
-export function tree(g) {
+/**
+ * The shortest-route tree from the entry nodes, as indented markdown. With `scope`, only
+ * branches that hold a node of that scope are drawn; the nodes on the way to them that belong
+ * elsewhere are marked "(via, other scope)".
+ */
+export function tree(g, { scope } = {}) {
   const nodes = g.data.nodes;
   const sources = Object.values(nodes).filter((n) => n.entry).map((n) => n.id);
   const out = new Map();
@@ -18,24 +23,33 @@ export function tree(g) {
   const res = dijkstra(sources, (u) => out.get(u) ?? []);
   const children = new Map();
   for (const [id, e] of res.prev) (children.get(e.from) ?? children.set(e.from, []).get(e.from)).push({ id, e });
-  const s = g.stats();
+  const s = g.stats(scope);
   const L = [
-    "# Surface tree",
+    `# Surface tree${scope ? `: ${scope}` : ""}`,
     "",
     `${s.nodes} nodes (${Object.entries(s.byStatus).filter(([, v]) => v).map(([k, v]) => `${v} ${k}`).join(", ")}), ${s.edges} edges, ${s.templates} templates, frontier ${s.frontier}. Closed: ${g.isClosed() ? "yes" : "no"}.`,
     "",
   ];
+  const mine = (n) => inScopeId(n, scope);
   const line = (n, depth, via) =>
-    `${"  ".repeat(depth)}- ${via ? `${via.kind} "${(via.element.name ?? "").slice(0, 40)}" -> ` : ""}**${n.label.slice(0, 70)}** \`${n.id}\` ${n.kind}, ${n.template}, ${VERDICT[n.status]}${n.bound ? ` (${n.bound})` : ""}${n.detail ? ` (${n.detail})` : ""}`;
+    `${"  ".repeat(depth)}- ${via ? `${via.kind} "${(via.element.name ?? "").slice(0, 40)}" -> ` : ""}**${n.label.slice(0, 70)}** \`${n.id}\` ${n.kind}, ${n.template}, ${VERDICT[n.status]}${n.scope && !scope ? ` [${n.scope}]` : ""}${n.bound ? ` (${n.bound})` : ""}${n.detail ? ` (${n.detail})` : ""}${scope && !mine(n) ? " (via, other scope)" : ""}`;
+  // Does a subtree hold a node of the scope? Memoised; the route tree has no cycles.
+  const holds = new Map();
+  const has = (id) => {
+    if (!scope) return true;
+    if (!holds.has(id)) holds.set(id, mine(nodes[id]) || (children.get(id) ?? []).some((k) => has(k.id)));
+    return holds.get(id);
+  };
   const seen = new Set();
   const walk = (id, depth, via) => {
     seen.add(id);
+    if (!has(id)) return;
     L.push(line(nodes[id], depth, via));
     const kids = (children.get(id) ?? []).sort((a, b) => nodes[a.id].label.localeCompare(nodes[b.id].label));
     for (const k of kids) walk(k.id, depth + 1, k.e);
   };
   for (const s0 of sources) walk(s0, 0, null);
-  const rest = Object.keys(nodes).filter((id) => !seen.has(id));
+  const rest = Object.keys(nodes).filter((id) => !seen.has(id) && mine(nodes[id]));
   if (rest.length) {
     L.push("", "## Reachable only through a write", "");
     for (const id of rest) L.push(line(nodes[id], 0, null));
@@ -45,9 +59,9 @@ export function tree(g) {
   return L.join("\n") + "\n";
 }
 
-export function writeTree(g, dir) {
-  const p = join(dir, "tree.md");
-  writeFileSync(p, tree(g));
+export function writeTree(g, dir, { scope } = {}) {
+  const p = join(dir, scope ? `tree-${scope}.md` : "tree.md");
+  writeFileSync(p, tree(g, { scope }));
   return p;
 }
 

@@ -20,10 +20,13 @@ Site-agnostic: nothing here names a target. A build's data lives in its own
 | 4 | build phase: units in dependency order, one at a time, a packet per unit | `build.mjs` `run.mjs` | done 2026-10-26 (`X-FLOW`) |
 | 5 | `SKILL.md` drives the coordinator instead of prose | `SKILL.md` sections 4-5, `reference/graph.md` | done 2026-10-26 |
 | 6 | first real audit (reference vs clone, 2 logged-in areas): parallel workers per area, saved-login browsers instead of one CDP window, clean SIGTERM, failed-request log per click, write-only nodes closed as bounded, template sampling, walked-graph diff | `explore.mjs` `compare.mjs` `../lib/export-login.mjs` | done 2026-10-26 |
+| 7 | scopes (component tags from ordered rules), `requeue --gaps` on the walker's retryable reasons, node pairs (`pairs.json`), Phase D per pair (`verify`: pixels, structure and AX tree, human eye, api, writes), counts and report from the graph plus check records | `graph.mjs` `compare.mjs` `verify.mjs` `run.mjs` `views.mjs` `cli.mjs` | done 2026-11-14 (`test/scope` `test/requeue` `test/verify` `test/verify-e2e`) |
 
 Not done: the walker does not drag, draw, type or upload (Chrome does, SKILL.md section 4);
 the live diagram is regenerated per chunk, not streamed; workers share no graph file, so
-each area's walk is diffed from its own copy.
+each area's walk is diffed from its own copy. `verify` does not run computed style or the
+width sweep (their scripts run on their own), does not diff websocket frames, and runs
+human_eye on the page under an overlay, not on the overlay alone.
 
 ## How it works
 
@@ -106,12 +109,59 @@ real dependency cycle.
 `isClosed()` is true only when the frontier is empty and nothing is mid-expansion: the
 reference's "the queue decides, not the builder" as a check.
 
-### 8. Files
+### 8. Scopes
+
+`O scope --map scope.json` tags each node with a scope (a component id) from ordered rules on
+URL pattern, title, heading, breadcrumb (from `info.breadcrumb` or the node's saved AX tree),
+label, kind and template; the first rule that matches wins (`graph.mjs` `tagScopes`). Then an
+untagged node takes the scope its template's tagged members agree on, and an untagged overlay
+or state takes its parent's, until nothing changes. Everything else is `unscoped`. `status`,
+`tree`, `compare`, `verify` and `report` all take `--scope <id>`.
+
+### 9. Gaps that can be retried
+
+The walker records why it gave up on a node: `gapReason: { code, retryable, message }`
+(`explore.mjs` `markGap`). `O requeue --gaps [--reason text]` (`graph.mjs` `requeueGaps`) puts
+every gap whose reason is retryable back on the frontier with its attempts reset, judging by
+the walker's exported `gapReason` when present and by `isRetryableReason` otherwise. A gap
+with no reason at all is retried; out of scope, rulings, HTTP 4xx and write-only are not.
+
+### 10. Phase D per node pair (`verify.mjs`)
+
+`compare.mjs` `pairNodes` pairs each reference node with at most one clone node: same view
+key (path family plus view flags) and kind, best score of skeleton similarity (0.5), control
+label overlap (0.3) and state title (0.2), one to one. Leftovers are ref-only (with the gap or
+bounded reason when the walk recorded one, else "not on the clone") and clone-only. `compare`
+and `verify` write them to `<clone>/pairs.json`.
+
+`O verify` then, for every pair, reaches the clone node by its replay route on the clone graph
+and runs:
+
+| check | how | fails on |
+|---|---|---|
+| `pixels` | the saved reference screenshot vs a clone screenshot at the same width, height, DPR and full-page mode; `masks.json` rects or selectors masked on both; built-in PNG codec and pixelmatch's YIQ distance (the repo has no pixelmatch) | any unmasked differing pixel (or `maxDiffPixels`); counts per landmark and named region, plus `diff.png` |
+| `structure` | the saved `aria.yml` vs the clone's AX snapshot of the same scope: structural roles, names (digits as `#`), states, order; table rows are data | a missing or invented entry, or a reordering |
+| `human_eye` | `../qa/human_eye.mjs`, run as a child process on every clone page in one browser | any finding |
+| `api` | the reference node's captured reads (`inventory.json` + `xhr/`) vs the clone's requests while reaching the node, by `METHOD path-template` | an operation the clone never calls; a query key, request field or response field on one side only |
+| `writes` | `../qa/write_roundtrip.mjs` on the clone, for rows of `--writes` matching the pair | a failed round trip; a node with write edges or pending writes and no row is skipped, so not verified |
+
+Each check writes `<clone>/verify/<clone node>/<check>.json` in the check-record shape
+(`{ ran, count, status, reason, at }`) plus `<check>.detail.json`; a check that does not apply
+is `skipped` with a reason starting "not applicable". The clone graph node gets
+`verify: { ref, pixels, structure, human_eye, api, writes, passed, at }` and status `verified`
+when it passed. A node counts as verified only when the graph says so **and** every record on
+disk agrees (`nodeVerified`), so `O status` and `O report` count from the graph plus records:
+`verified N / built M / ref-only K` (built = matched pairs).
+
+### 11. Files
 
 | file | written by | content |
 |---|---|---|
 | `discovery/graph.json` | `save()`, atomically (tmp + rename) | the whole graph |
 | `discovery/events.jsonl` | every mutation, append-only | `node.added`, `edge.added`, `template.added`, `node.status` |
+| `<clone>/pairs.json` | `compare`, `verify` | matched pairs, ref-only (with reasons), clone-only |
+| `<clone>/verify/<node>/` | `verify` | a record and detail per check, `ref.png` `clone.png` `diff.png` `clone.aria.yml` |
+| `<clone>/verify/report[-scope].md` | `report` | the end-to-end table |
 
 ## Use
 
@@ -121,9 +171,14 @@ The commands SKILL.md runs, from the clone repo's root (`RL_REPO` overrides):
 node run.mjs init --target <url> [--prefix /path] [--entry <url>]...
 node run.mjs explore --max-nodes 40 [--risky probe] [--allow-post <regex>] [--cdp http://127.0.0.1:9222] [--headed]
 node run.mjs status | tree | live | pending | frontier | route <id> | loops
-node run.mjs requeue <id> | requeue --failed | gap <id> --reason "..."
+node run.mjs requeue <id> | requeue --failed | requeue --gaps [--reason <text>] | gap <id> --reason "..."
 node run.mjs explore --dir <copy> --only-prefix /area ...       # one parallel worker per area
-node run.mjs compare --ref <dirs> --clone <dirs> --out diff.md # reference walk vs clone walk
+node run.mjs explore ... --ws-guard block|off --retries 3 --login-pattern <regex>
+node run.mjs scope --map scope.json                             # tag nodes by component
+node run.mjs status --scope S01 | tree --scope S01              # per scope
+node run.mjs compare --ref <dirs> --clone <dirs> [--scope S01] --out diff.md   # + <clone>/pairs.json
+node run.mjs verify --ref <dirs> --clone <dir> [--scope S01] [--node <id>] --masks masks.json --writes writes.json
+node run.mjs report --clone <dir> --scope S01                    # <clone>/verify/report-S01.md
 node run.mjs plan | next-unit | packet <unit> | unit-done <unit> [--verified]
 ```
 
@@ -131,7 +186,8 @@ Engine views and tests (the end-to-end test needs Playwright, resolved from `RL_
 
 ```bash
 RL_REPO=<clone repo> node --test 'test/*.test.mjs'
-node cli.mjs <discovery-dir> stats            # counts, frontier size, template histogram
+node cli.mjs <discovery-dir> stats [scope]    # counts, frontier size, template histogram
+node cli.mjs <discovery-dir> scopes           # nodes and statuses per scope
 node cli.mjs <discovery-dir> frontier         # what gets explored next, in order
 node cli.mjs <discovery-dir> order            # build order
 node cli.mjs <discovery-dir> route <nodeId>   # cheapest replay path to a node

@@ -9,11 +9,18 @@
 //   dead        on the reference it opened or changed something; on the clone the same control did nothing
 //   no-surface  a dialog, menu or state the reference opens from this page that the clone never shows
 // plus whole pages the reference has and the clone has none of.
+//
+// `pairNodes` goes one level finer, node by node, for Phase D (`verify.mjs`): every reference
+// node is paired with at most one clone node of the same view key and kind, the best by
+// structure (skeleton similarity), control labels and state title. What is left over is
+// ref-only (with its gap or bounded reason when it has one) or clone-only. Written as pairs.json.
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { similarity } from "./algorithms.mjs";
 import { pathPattern } from "./bound.mjs";
+import { UNSCOPED, gapReason, inScopeId } from "./graph.mjs";
 
 const OPENED = new Set(["navigation", "overlay", "hover-overlay", "state", "popup", "page", "known", "bounded"]);
 
@@ -28,16 +35,30 @@ export function viewKey(url) {
 
 const RANK = { verified: 5, built: 4, closed: 3, expanding: 1, frontier: 1, bounded: 0, gap: 0 };
 
-/** One side's walk, from one graph dir or several (parallel workers over one site): nodes unioned, the most advanced copy kept. */
-function load(dirs) {
+/** Every node of one side's walk (one graph dir or several workers' copies), the most advanced copy kept, with the dir it lives in. */
+export function loadNodes(dirs) {
   const best = new Map();
   for (const dir of [dirs].flat()) {
     const g = JSON.parse(readFileSync(join(dir, "graph.json"), "utf8"));
     for (const n of Object.values(g.nodes)) {
       const prev = best.get(n.id);
-      if (!prev || RANK[n.status] > RANK[prev.n.status]) best.set(n.id, { n, dir });
+      if (!prev || RANK[n.status] > RANK[prev.n.status]) best.set(n.id, { n, dir, edges: g.edges });
     }
   }
+  return best;
+}
+
+/** A side's nodes in `scope`. A side that carries no scope tags at all is not filtered (its scope is unknown, not empty). */
+function scoped(best, scope) {
+  if (!scope) return best;
+  const tagged = [...best.values()].some(({ n }) => n.scope);
+  if (!tagged && scope !== UNSCOPED) return best;
+  return new Map([...best].filter(([, { n }]) => inScopeId(n, scope)));
+}
+
+/** One side's walk, from one graph dir or several (parallel workers over one site): nodes unioned, the most advanced copy kept. */
+function load(dirs, scope) {
+  const best = scoped(loadNodes(dirs), scope);
   const pages = new Map();
   for (const { n, dir } of best.values()) {
     if (n.status === "gap" || n.status === "bounded") continue;
@@ -120,9 +141,9 @@ function diffPage(rp, cp, skip = new Set(), skipSurf = new Set()) {
   return row;
 }
 
-export function compare(refDirs, cloneDirs) {
-  const ref = load(refDirs);
-  const clone = load(cloneDirs);
+export function compare(refDirs, cloneDirs, { scope } = {}) {
+  const ref = load(refDirs, scope);
+  const clone = load(cloneDirs, scope);
   const shell = shellOf(ref);
   const out = { pagesMissing: [], pages: [diffPage(shell, union(clone))] };
   for (const [key, rp] of ref.pages) {
@@ -155,4 +176,109 @@ export function toMarkdown(r) {
     L.push("");
   }
   return L.join("\n");
+}
+
+// ---------- node pairs (Phase D) ----------
+
+/** Normalised control labels a node's walk saved (inventory.json), for the label overlap score. */
+function controlLabels(n, dir) {
+  const inv = n.info?.artifacts && join(dir, n.info.artifacts, "inventory.json");
+  if (!inv || !existsSync(inv)) return new Set();
+  try {
+    return new Set(JSON.parse(readFileSync(inv, "utf8")).candidates.filter((c) => c.name).map((c) => `${c.role}|${norm(c.name)}`));
+  } catch {
+    return new Set();
+  }
+}
+
+const jaccard = (a, b) => {
+  if (!a.size && !b.size) return 1;
+  let both = 0;
+  for (const x of a) if (b.has(x)) both++;
+  return both / (a.size + b.size - both);
+};
+
+/** The title part of a state (`modal:Edit listing` -> `edit listing`), normalised. */
+const stateTitle = (n) => norm((n.state ?? "").replace(/^[a-z-]+:/, ""));
+const titlesMatch = (a, b) => a === b || (a.length >= 4 && b.length >= 4 && (a.includes(b) || b.includes(a)));
+
+/** Why a reference node has no clone twin when the walk itself says so (gap or bounded). */
+function refReason(n) {
+  if (n.status === "gap") return `gap: ${gapReason(n) ?? "no reason recorded"}`;
+  if (n.status === "bounded") return `bounded: ${n.bound ?? n.detail ?? "no reason recorded"}`;
+  return null;
+}
+
+/**
+ * Pair every reference node with at most one clone node: same view key (path family plus view
+ * flags) and same kind, then the best score of structure (skeleton similarity, 0.5), control
+ * labels (Jaccard, 0.3) and state title (0.2). An overlay or state pairs only when its title
+ * matches or its structure is at least half the same. Greedy by score, one to one.
+ * Gap and bounded nodes on either side never pair: a reference one is ref-only with its reason.
+ */
+export function pairNodes(refDirs, cloneDirs, { scope } = {}) {
+  const refAll = loadNodes(refDirs);
+  const ref = scoped(refAll, scope);
+  const cloneAll = loadNodes(cloneDirs);
+  const live = (n) => n.status !== "gap" && n.status !== "bounded";
+  const keyOf = (n) => {
+    try {
+      return viewKey(n.href ?? n.url);
+    } catch {
+      return n.url;
+    }
+  };
+  const cloneBy = new Map();
+  for (const c of cloneAll.values()) {
+    if (!live(c.n)) continue;
+    const k = `${keyOf(c.n)}|${c.n.kind}`;
+    (cloneBy.get(k) ?? cloneBy.set(k, []).get(k)).push(c);
+  }
+  const labels = new Map();
+  const labelsOf = ({ n, dir }) => labels.get(`${dir}|${n.id}`) ?? labels.set(`${dir}|${n.id}`, controlLabels(n, dir)).get(`${dir}|${n.id}`);
+
+  const candidates = [];
+  const refOnly = [];
+  for (const r of ref.values()) {
+    const reason = refReason(r.n);
+    if (reason) {
+      refOnly.push({ r, reason });
+      continue;
+    }
+    const pool = cloneBy.get(`${keyOf(r.n)}|${r.n.kind}`) ?? [];
+    for (const c of pool) {
+      const structure = similarity(r.n.signature ?? [], c.n.signature ?? []);
+      const title = titlesMatch(stateTitle(r.n), stateTitle(c.n)) ? 1 : 0;
+      if (r.n.kind !== "page" && !title && structure < 0.5) continue;
+      const lab = jaccard(labelsOf(r), labelsOf(c));
+      candidates.push({ r, c, structure, labels: lab, title, score: 0.5 * structure + 0.3 * lab + 0.2 * title });
+    }
+  }
+  candidates.sort((a, b) => b.score - a.score || (a.r.n.id < b.r.n.id ? -1 : a.r.n.id > b.r.n.id ? 1 : a.c.n.id < b.c.n.id ? -1 : 1));
+  const usedR = new Set();
+  const usedC = new Set();
+  const pairs = [];
+  for (const x of candidates) {
+    if (usedR.has(x.r.n.id) || usedC.has(x.c.n.id)) continue;
+    usedR.add(x.r.n.id);
+    usedC.add(x.c.n.id);
+    pairs.push(x);
+  }
+  for (const r of ref.values()) if (!refReason(r.n) && !usedR.has(r.n.id)) refOnly.push({ r, reason: null });
+
+  const refKeys = new Set([...ref.values()].map((r) => keyOf(r.n)));
+  const cloneTagged = [...cloneAll.values()].some(({ n }) => n.scope);
+  const cloneOnly = [...cloneAll.values()].filter(({ n }) => live(n) && !usedC.has(n.id) && (!scope || (cloneTagged ? inScopeId(n, scope) : refKeys.has(keyOf(n)))));
+
+  const side = ({ n, dir }) => ({ id: n.id, label: n.label, url: n.href ?? n.url, kind: n.kind, dir, scope: n.scope ?? null });
+  const round = (v) => Math.round(v * 1000) / 1000;
+  return {
+    at: new Date().toISOString(),
+    scope: scope ?? null,
+    ref: [refDirs].flat(),
+    clone: [cloneDirs].flat(),
+    pairs: pairs.map((x) => ({ key: keyOf(x.r.n), kind: x.r.n.kind, scope: x.r.n.scope ?? null, ref: side(x.r), clone: side(x.c), score: { total: round(x.score), structure: round(x.structure), labels: round(x.labels), title: x.title } })),
+    refOnly: refOnly.map(({ r, reason }) => ({ key: keyOf(r.n), kind: r.n.kind, scope: r.n.scope ?? null, ref: side(r), status: r.n.status, reason: reason ?? "not on the clone" })),
+    cloneOnly: cloneOnly.map((c) => ({ key: keyOf(c.n), kind: c.n.kind, clone: side(c) })),
+  };
 }
