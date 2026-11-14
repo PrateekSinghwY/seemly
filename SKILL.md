@@ -68,6 +68,35 @@ the overlay right after the base reference, every session.
 
 ---
 
+## 0.4 No shortcuts: "built" means Phase D passed (hard gate, never waived by the agent)
+
+A node, unit, item or screen is **built** only when every Phase D channel that can run has run
+and passed, with its check record on disk:
+- **Pixels:** oracle clip vs the clone, same Chrome build, viewport, DPR and masks.
+- **Structure and accessibility tree:** `struct_audit.mjs`.
+- **Computed style.**
+- **Human eye:** `human_eye.mjs`, with `--dead-controls` at slice end.
+- **Widths:** `width_sweep.mjs`.
+- **Network:** `api_diff.mjs`, captured reads vs the clone's OpenAPI and responses.
+- **Writes:** `write_roundtrip.mjs`.
+
+The rules:
+- **Tests and API round trips alone are never "built".** They prove one channel of four.
+- **"Not verified" is not a final state** for a channel that can run while the reference is
+  reachable. Run it, or say BLOCKED and why. Never list it as a caveat and count the item as done.
+- **Every delegated builder or fixer brief includes the Phase D scripts for its nodes**, and its
+  report must cite the check records. A report without them is incomplete, and the lead re-runs
+  Phase D before committing.
+- **Every number reported to the human counts nodes whose check records pass**, from `graph.json`
+  and the records. Never a checklist tally, and never "built" for a node that has only tests.
+- **Slow is not a reason to skip.** Browser-heavy checks run at unit end and in the closed loop.
+  If the reference drops (login lost), the node stays `needs-verify`, not built.
+
+Why this exists: on 2026-11-14 a UKG build reported "29 of 70 built" off tests and write round
+trips, while no pixel, structure, accessibility or network diff had run on any of those screens.
+The skill had every script needed; the agent skipped them because they were slower. That is the
+failure this gate removes.
+
 ## 0.5 Intake
 
 The human's message follows `INTAKE.md`. Two forms:

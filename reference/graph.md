@@ -224,6 +224,9 @@ loop, start to finish, every time. The human should never have to restate it.
    record. A checklist line with no node behind it is the defect this rule exists to stop.
 3. **Walk the clone to CLOSED** on an isolated copy (own DB copy, own ports), with writes
    allowed.
+3b. **Phase D on every built node** (SKILL.md section 0.4): pixels, structure and accessibility tree,
+   style, human eye, widths, network (`api_diff.mjs`), writes. A node without passing check
+   records is `needs-verify`, never built.
 4. **Diff the two graphs:** `O compare --ref <ref> --clone <clone>`. Confirm every line by
    hand. Each confirmed line is fixed, and its node goes back on the queue.
 5. **Repeat steps 3 and 4 until compare has no unconfirmed line.** By then every reference
@@ -233,5 +236,5 @@ loop, start to finish, every time. The human should never have to restate it.
    capturing and print `BLOCKED`. Work may continue from existing captures, but every node
    that needed a new capture is marked `needs-capture`, never counted as covered. The loop
    resumes at step 1 for those nodes after re-login (`export-login.mjs`).
-7. **Every count reported** (nodes, closed, built, gaps) comes from `graph.json`, never from
-   a checklist tally.
+7. **Every count reported** (nodes, closed, built, gaps) comes from `graph.json` plus the Phase D
+   check records, never from a checklist tally or a test count.
