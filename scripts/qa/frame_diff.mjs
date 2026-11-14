@@ -46,9 +46,12 @@ const MIN_CONF = 60;
 // ---------------------------------------------------------------- OCR
 
 // Small or light-on-dark UI text fails OCR at native size (a frame shown at 1.7x scored 0 of
-// 13); both the frame and the clone are read from copies upscaled OCR_SCALE times, the same
-// factor video_privacy.py uses.
+// 13), and bordered controls fail it upscaled (2x read "Approve | Refresh | Calculate" buttons
+// as "eros [een] Ca", so the selftest's planted defects were never read and passed). Each
+// image is read at native size and at OCR_SCALE, and the two reads are merged.
 export const OCR_SCALE = 2;
+
+let warnedNoUpscale = false;
 
 /** A copy of `png` upscaled `scale` times (ffmpeg, lanczos), in a temp dir; null if it fails. */
 function upscaled(png, scale) {
@@ -58,26 +61,27 @@ function upscaled(png, scale) {
   try {
     execFileSync("ffmpeg", ["-v", "error", "-y", "-i", png, "-vf", `scale=iw*${scale}:ih*${scale}:flags=lanczos`, out], { stdio: "ignore" });
     return { out, dir };
-  } catch {
+  } catch (e) {
     rmSync(dir, { recursive: true, force: true });
+    if (!warnedNoUpscale) {
+      warnedNoUpscale = true;
+      console.error(`frame_diff: WARNING ffmpeg upscale failed (${e.code ?? e.message}); OCR reads native size only, small text may be missed`);
+    }
     return null;
   }
 }
 
-/** Words with boxes in the image's own pixels, via tesseract TSV at psm 11 on an upscaled
- * copy, the same call the video mode uses. */
-export function ocr(png, scale = OCR_SCALE) {
-  const big = upscaled(png, scale);
-  const k = big ? scale : 1;
-  let tsv;
+/** Run tesseract; a missing binary or a failed read is an error, never an empty word list. */
+export function tesseract(img, args) {
   try {
-    tsv = execFileSync("tesseract", [big ? big.out : png, "-", "--psm", "11", "tsv"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-  } finally {
-    if (big) rmSync(big.dir, { recursive: true, force: true });
+    return execFileSync("tesseract", [img, "-", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  } catch (e) {
+    if (e.code === "ENOENT") throw new Error("frame_diff: tesseract is not on PATH; OCR is required for the text and layout channels (brew install tesseract)");
+    throw new Error(`frame_diff: tesseract failed on ${img}: ${String(e.stderr || e.message).trim().split("\n").pop()}`);
   }
+}
+
+function parseTsv(tsv, k) {
   const words = [];
   for (const line of tsv.split("\n").slice(1)) {
     const c = line.split("\t");
@@ -87,6 +91,36 @@ export function ocr(png, scale = OCR_SCALE) {
     words.push({ text: c[11].trim(), conf, x, y, w, h });
   }
   return words;
+}
+
+/** Union of several reads of one image: where two words overlap (intersection over the smaller
+ * box above half), the higher-confidence one is kept. */
+export function mergeReads(...reads) {
+  const all = reads.flat().sort((a, b) => b.conf - a.conf);
+  const kept = [];
+  for (const w of all) {
+    const clash = kept.some((k) => {
+      const ix = Math.min(w.x + w.w, k.x + k.w) - Math.max(w.x, k.x);
+      const iy = Math.min(w.y + w.h, k.y + k.h) - Math.max(w.y, k.y);
+      if (ix <= 0 || iy <= 0) return false;
+      return (ix * iy) / Math.max(1, Math.min(w.w * w.h, k.w * k.h)) > 0.5;
+    });
+    if (!clash) kept.push(w);
+  }
+  return kept;
+}
+
+/** Words with boxes in the image's own pixels: tesseract TSV at psm 11 (the call the video mode
+ * uses) at native size and on an OCR_SCALE copy, merged. */
+export function ocr(png, scale = OCR_SCALE) {
+  const native = parseTsv(tesseract(png, ["--psm", "11", "tsv"]), 1);
+  const big = upscaled(png, scale);
+  if (!big) return native;
+  try {
+    return mergeReads(native, parseTsv(tesseract(big.out, ["--psm", "11", "tsv"]), scale));
+  } finally {
+    rmSync(big.dir, { recursive: true, force: true });
+  }
 }
 
 export const norm = (t) => t.toLowerCase().replace(/[^a-z]/g, "");
@@ -133,7 +167,9 @@ export function textChannel(frameWords, cloneWords, ignoreList = []) {
     const found = clone.has(n) || (n.length >= 5 && [...clone].some((c) => editDistanceAtMost1(n, c)));
     if (!found) missing.push({ label: n, box: [w.x, w.y, w.w, w.h] });
   }
-  return { pass: missing.length === 0, labels: want.size, missing };
+  // No label read from the frame proves nothing: OCR failed or the frame is blank.
+  const unread = want.size === 0 ? "no label read from the frame (OCR read nothing usable)" : null;
+  return { pass: !unread && missing.length === 0, labels: want.size, missing, error: unread };
 }
 
 const median = (xs) => {
@@ -184,6 +220,9 @@ export function layoutChannel(frameWords, cloneWords, regions, crop, ignoreList 
     const d = mine.map((p) => Math.hypot(p.dx - gx, p.dy - gy));
     const tol = TOL[r.kind] ?? TOL.region;
     const med = median(d);
+    // A declared region with no matched word was not measured; "page" may be empty when the
+    // declared regions claim every word.
+    const unmeasured = mine.length === 0 && (r.name !== "page" || pairs.length === 0);
     out.push({
       name: r.name,
       kind: r.kind ?? "region",
@@ -191,11 +230,12 @@ export function layoutChannel(frameWords, cloneWords, regions, crop, ignoreList 
       median: +med.toFixed(1),
       max: +(d.length ? Math.max(...d) : 0).toFixed(1),
       tol,
-      pass: med <= tol,
+      pass: !unmeasured && med <= tol,
+      unmeasured,
       box: r.box,
     });
   }
-  return { pass: out.every((r) => r.pass), matched: pairs.length, calibration: [+gx.toFixed(1), +gy.toFixed(1)], regions: out };
+  return { pass: pairs.length > 0 && out.every((r) => r.pass), matched: pairs.length, calibration: [+gx.toFixed(1), +gy.toFixed(1)], regions: out };
 }
 
 export async function structureChannel(page, spec = []) {
@@ -291,7 +331,7 @@ async function recheckMissing(page, shot, text, crop, tmpDir) {
       const big = upscaled(p, OCR_SCALE);
       let words;
       try {
-        words = execFileSync("tesseract", [big ? big.out : p, "-", "--psm", "7"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+        words = tesseract(big ? big.out : p, ["--psm", "7"]);
       } finally {
         if (big) rmSync(big.dir, { recursive: true, force: true });
       }
@@ -370,13 +410,13 @@ function report(r) {
     "",
     "| channel | result | detail |",
     "|---|---|---|",
-    `| text | ${ok(r.text.pass)} | ${r.text.labels} frame labels; missing: ${r.text.missing.map((m) => m.label).join(", ") || "none"} |`,
+    `| text | ${ok(r.text.pass)} | ${r.text.error ? `${r.text.error}; ` : ""}${r.text.labels} frame labels; missing: ${r.text.missing.map((m) => m.label).join(", ") || "none"} |`,
     `| layout | ${ok(r.layout.pass)} | ${r.layout.matched} words matched; calibration ${r.layout.calibration.join(", ")} px |`,
     `| structure | ${ok(r.structure.pass)} | ${r.structure.rows.filter((x) => !x.pass).map((x) => `${x.role}${x.name ? ` "${x.name}"` : ""}: want ${x.want}, got ${x.got}${x.order ? `, ${x.order}` : ""}`).join("; ") || "all rows match"} |`,
     "",
     "| region | kind | words | median px | max px | tol | result |",
     "|---|---|---|---|---|---|---|",
-    ...r.layout.regions.map((g) => `| ${g.name} | ${g.kind} | ${g.words} | ${g.median} | ${g.max} | ${g.tol} | ${ok(g.pass)} |`),
+    ...r.layout.regions.map((g) => `| ${g.name} | ${g.kind} | ${g.words} | ${g.median} | ${g.max} | ${g.tol} | ${g.unmeasured ? "FAIL (no word matched: unmeasured)" : ok(g.pass)} |`),
   ];
   if (r.crops.length) L.push("", "Side by side (frame left, clone right):", "", ...r.crops.map((c) => `- ${c.what}: \`${c.file}\``));
   return `${L.join("\n")}\n`;
