@@ -13,8 +13,10 @@
 //               the same per node pair, edge by edge, for verify's `interactions` check)
 // plus whole pages the reference has and the clone has none of.
 //
+// `pairPages` pairs views first: a reference view key with the clone view a pair map names (the
+// clone keeps its own URL scheme), else the same key, else a flagged fuzzy match.
 // `pairNodes` goes one level finer, node by node, for Phase D (`verify.mjs`): every reference
-// node is paired with at most one clone node of the same view key and kind, the best by
+// node is paired with at most one clone node of the paired view and the same kind, the best by
 // structure (skeleton similarity), control labels and state title. What is left over is
 // ref-only (with its gap or bounded reason when it has one) or clone-only. Written as pairs.json.
 
@@ -164,18 +166,27 @@ function diffPage(rp, cp, skip = new Set(), skipSurf = new Set()) {
   return row;
 }
 
-export function compare(refDirs, cloneDirs, { scope } = {}) {
+/**
+ * The page-level diff. With `pairMap` (readPairMap), a reference view is diffed against the clone
+ * view the map names, else the clone view of the same key, else (map given) the most similar
+ * unclaimed clone view, flagged as a fuzzy pair; `pairing` lists each reference view's source.
+ */
+export function compare(refDirs, cloneDirs, { scope, pairMap = null } = {}) {
   const ref = load(refDirs, scope);
   const clone = load(cloneDirs, scope);
+  const pagePairs = pairPages(scoped(loadNodes(refDirs), scope), scoped(loadNodes(cloneDirs), scope), pairMap);
   const shell = shellOf(ref);
-  const out = { pagesMissing: [], pages: [diffPage(shell, union(clone))] };
+  const out = { pagesMissing: [], pages: [diffPage(shell, union(clone))], pairing: [...pagePairs.values()] };
   for (const [key, rp] of ref.pages) {
-    const cp = clone.pages.get(key);
+    const pp = pagePairs.get(key);
+    const cp = pp?.clone ? clone.pages.get(pp.clone) : null;
     if (!cp) {
-      out.pagesMissing.push({ key, example: rp.nodes[0].url, kinds: [...new Set(rp.nodes.map((n) => n.kind))] });
+      out.pagesMissing.push({ key, example: rp.nodes[0].url, kinds: [...new Set(rp.nodes.map((n) => n.kind))], source: pp?.source ?? "none", mapped: pp?.clone ?? null });
       continue;
     }
     const row = diffPage(rp, cp, new Set(shell.controls.keys()), new Set(shell.surfaces.keys()));
+    row.clone = pp.clone;
+    row.source = pp.source;
     out.pages.push(row);
   }
   return out;
@@ -184,14 +195,20 @@ export function compare(refDirs, cloneDirs, { scope } = {}) {
 export function toMarkdown(r) {
   const L = ["# Reference vs clone: walked-graph diff", ""];
   if (r.pagesMissing.length) {
-    L.push("## Views the reference has and the clone has none of", "", "| view | example | kinds |", "|---|---|---|");
-    for (const p of r.pagesMissing) L.push(`| \`${p.key}\` | ${p.example} | ${p.kinds.join(", ")} |`);
+    L.push("## Views the reference has and the clone has none of", "", "| view | example | kinds | pairing |", "|---|---|---|---|");
+    for (const p of r.pagesMissing) L.push(`| \`${p.key}\` | ${p.example} | ${p.kinds.join(", ")} | ${p.mapped ? `${p.source} -> \`${p.mapped}\`, which the clone walk never reached` : p.source ?? "none"} |`);
+    L.push("");
+  }
+  const fuzzy = (r.pairing ?? []).filter((p) => p.source === "fuzzy");
+  if (fuzzy.length) {
+    L.push("## Fuzzy pairs: confirm each, then add it to the pair map", "", "| reference view | clone view | score |", "|---|---|---|");
+    for (const p of fuzzy) L.push(`| \`${p.ref}\` | \`${p.clone}\` | ${p.score} |`);
     L.push("");
   }
   for (const p of r.pages) {
     const n = p.missing.length + p.disabled.length + p.dead.length + p.noSurface.length + (p.interactions?.length ?? 0);
     if (!n) continue;
-    L.push(`## \`${p.key}\` (${n})`, "");
+    L.push(`## \`${p.key}\`${p.clone && p.clone !== p.key ? ` -> \`${p.clone}\` (${p.source})` : ""} (${n})`, "");
     if (p.noSurface.length) L.push(`- **opens on the reference, never on the clone:** ${p.noSurface.join(" · ")}`);
     if (p.dead.length) L.push(`- **does something on the reference, nothing on the clone:** ${p.dead.join(" · ")}`);
     if (p.interactions?.length) L.push(`- **an interaction answers on the reference, not on the clone:** ${p.interactions.join(" · ")}`);
@@ -233,25 +250,193 @@ function refReason(n) {
   return null;
 }
 
+// ---------- page pairs: reference view key -> clone view key ----------
+//
+// A clone rarely keeps the reference's URL scheme (`/metaui#/list/KioskConfiguration` on the
+// reference, `/administration/kiosk-configurations` on the clone), so pairing by identical view
+// key alone pairs nothing. A pair map names the clone view of each reference view:
+//
+//   { "about": "...", "fuzzy": 0.6,
+//     "map": { "/metaui#/list/KioskConfiguration": "/administration/kiosk-configurations",
+//              "/ia#/dataView/:id": "/reports/library/:id",
+//              "/metaui#/list/:entity": "/admin/:entity",
+//              "re:^/wfc/applications/(\\w+)/": "/legacy/$1" },
+//     "rules": [{ "ref": "/timekeeping#/(?<tab>\\w+)$", "on": "url", "clone": "/time/$<tab>" }] }
+//
+// A `map` key is a reference view key (matched exactly), a view key with `:name` segments (each
+// matches one segment and fills `:name` in the clone side), or `re:<regex>`. A `rules` entry's
+// `ref` is a regex tested against `on`: the view key, the full URL or the route (path plus hash);
+// all three when `on` is omitted. `$1` / `$<name>` fill the clone side. The clone side is a view
+// key, a route or a URL, normalised to a view key. Exact keys win; then patterns in file order.
+// A bare object (no `map`, no `rules`) is read as the map itself.
+//
+// An unmapped reference view pairs with the clone view of the same key; else, when a map is in
+// force and `fuzzy` is not false, with the most similar clone view nothing else claimed: page
+// structure (skeleton similarity, 0.5) plus control labels (Jaccard, 0.5) at least `fuzzy`
+// (default FUZZY_MIN). A fuzzy pair is reported for a person to confirm.
+
+export const FUZZY_MIN = 0.6;
+const BASE = "http://pair-map.invalid";
+const META_KEYS = new Set(["about", "fuzzy", "rules", "map"]);
+
+/** A route, view key or URL as written in a pair map, normalised to a view key. */
+export function keyFromRoute(s) {
+  const v = String(s ?? "").trim();
+  try {
+    return viewKey(/^https?:\/\//.test(v) ? v : `${BASE}${v.startsWith("/") ? v : `/${v}`}`);
+  } catch {
+    return v;
+  }
+}
+
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** `/metaui#/list/:entity` -> /^\/metaui#\/list\/(?<entity>[^/#?]+)$/ (a repeated name is matched, not captured again). */
+function paramPattern(key) {
+  const seen = new Set();
+  const src = key.split(/(:[A-Za-z_]\w*)/).map((part) => {
+    const m = /^:([A-Za-z_]\w*)$/.exec(part);
+    if (!m) return escapeRe(part);
+    if (seen.has(m[1])) return "[^/#?]+";
+    seen.add(m[1]);
+    return `(?<${m[1]}>[^/#?]+)`;
+  }).join("");
+  return new RegExp(`^${src}$`);
+}
+
+function compileRule(ref, clone, on = null) {
+  if (typeof ref !== "string" || typeof clone !== "string") throw new Error(`pair map entry ${JSON.stringify(ref)} -> ${JSON.stringify(clone)}: both sides must be strings`);
+  if (on && !["key", "url", "route"].includes(on)) throw new Error(`pair map rule ${ref}: "on" is key, url or route`);
+  if (on || ref.startsWith("re:")) return { kind: "regex", ref, re: new RegExp(on ? ref : ref.slice(3)), on, clone };
+  const key = keyFromRoute(ref);
+  return { kind: /:[A-Za-z_]\w*/.test(key) ? "params" : "key", ref, key, re: /:[A-Za-z_]\w*/.test(key) ? paramPattern(key) : null, clone };
+}
+
+/** A pair-map file (or object) compiled: `{ rules, fuzzy, file }`; null when none is given. */
+export function readPairMap(src) {
+  if (!src) return null;
+  const doc = typeof src === "string" ? JSON.parse(readFileSync(src, "utf8")) : src;
+  const entries = doc.map ?? Object.fromEntries(Object.entries(doc).filter(([k]) => !META_KEYS.has(k)));
+  const rules = [];
+  for (const [ref, clone] of Object.entries(entries)) rules.push(compileRule(ref, clone));
+  for (const r of doc.rules ?? []) rules.push(compileRule(r.ref, r.clone, r.on ?? null));
+  const fuzzy = doc.fuzzy === false ? false : typeof doc.fuzzy === "number" ? doc.fuzzy : FUZZY_MIN;
+  return { rules, fuzzy, file: typeof src === "string" ? src : null };
+}
+
+function fill(target, m) {
+  const groups = m.groups ?? {};
+  return target
+    .replace(/\$<(\w+)>/g, (_, k) => groups[k] ?? "")
+    .replace(/\$(\d+)/g, (_, i) => m[+i] ?? "")
+    .replace(/:([A-Za-z_]\w*)/g, (all, k) => (k in groups ? groups[k] : all));
+}
+
+/** The clone view key the map gives a reference node (by its view key, URL and route), with the rule that gave it; or null. */
+export function mapView(pairMap, n) {
+  if (!pairMap) return null;
+  const url = n.href ?? n.url;
+  let key;
+  let route = "";
+  try {
+    key = viewKey(url);
+    const u = new URL(url);
+    route = `${u.pathname}${u.hash}`;
+  } catch {
+    key = url;
+  }
+  for (const r of pairMap.rules) if (r.kind === "key" && r.key === key) return { clone: keyFromRoute(r.clone), rule: r.ref };
+  for (const r of pairMap.rules) {
+    if (r.kind === "key") continue;
+    const subjects = r.kind === "params" ? [key] : r.on ? [{ key, url, route }[r.on]] : [key, url, route];
+    for (const s of subjects) {
+      const m = r.re.exec(s);
+      if (m) return { clone: keyFromRoute(fill(r.clone, m)), rule: r.ref };
+    }
+  }
+  return null;
+}
+
+const nodeKey = (n) => {
+  try {
+    return viewKey(n.href ?? n.url);
+  } catch {
+    return n.url;
+  }
+};
+const liveNode = (n) => n.status !== "gap" && n.status !== "bounded";
+
 /**
- * Pair every reference node with at most one clone node: same view key (path family plus view
- * flags) and same kind, then the best score of structure (skeleton similarity, 0.5), control
+ * Every reference view key -> `{ ref, clone, source, score?, rule?, scope, example }`, where
+ * source is `map`, `key`, `fuzzy` or `none`. `ref` and `clone` are loadNodes maps.
+ */
+export function pairPages(ref, clone, pairMap = null, { labelsOf = ({ n, dir }) => controlLabels(n, dir) } = {}) {
+  const byKey = (side) => {
+    const m = new Map();
+    for (const x of side.values()) {
+      if (!liveNode(x.n)) continue;
+      const k = nodeKey(x.n);
+      (m.get(k) ?? m.set(k, []).get(k)).push(x);
+    }
+    return m;
+  };
+  const refKeys = byKey(ref);
+  const cloneKeys = byKey(clone);
+  const out = new Map();
+  const claimed = new Set();
+  const open = [];
+  for (const [key, xs] of refKeys) {
+    const lead = xs.find((x) => x.n.kind === "page") ?? xs[0];
+    const base = { ref: key, scope: lead.n.scope ?? null, example: lead.n.href ?? lead.n.url };
+    const hit = mapView(pairMap, lead.n);
+    if (hit) {
+      out.set(key, { ...base, clone: hit.clone, source: "map", rule: hit.rule, reached: cloneKeys.has(hit.clone) });
+      claimed.add(hit.clone);
+    } else if (cloneKeys.has(key)) {
+      out.set(key, { ...base, clone: key, source: "key" });
+      claimed.add(key);
+    } else {
+      out.set(key, { ...base, clone: null, source: "none" });
+      open.push(key);
+    }
+  }
+  const min = pairMap ? pairMap.fuzzy : false;
+  if (min === false || !open.length) return out;
+  const pagesOf = (xs) => xs.filter((x) => x.n.kind === "page");
+  const cands = [];
+  for (const rk of open) {
+    const rps = pagesOf(refKeys.get(rk));
+    for (const [ck, cxs] of cloneKeys) {
+      if (claimed.has(ck)) continue;
+      let best = 0;
+      for (const r of rps) for (const c of pagesOf(cxs)) best = Math.max(best, 0.5 * similarity(r.n.signature ?? [], c.n.signature ?? []) + 0.5 * jaccard(labelsOf(r), labelsOf(c)));
+      if (best >= min) cands.push({ rk, ck, score: best });
+    }
+  }
+  cands.sort((a, b) => b.score - a.score || (a.rk < b.rk ? -1 : a.rk > b.rk ? 1 : a.ck < b.ck ? -1 : 1));
+  const usedR = new Set();
+  for (const x of cands) {
+    if (usedR.has(x.rk) || claimed.has(x.ck)) continue;
+    usedR.add(x.rk);
+    claimed.add(x.ck);
+    out.set(x.rk, { ...out.get(x.rk), clone: x.ck, source: "fuzzy", score: Math.round(x.score * 1000) / 1000 });
+  }
+  return out;
+}
+
+/**
+ * Pair every reference node with at most one clone node: same paired view (pairPages: the
+ * pair map's clone view, else the same view key, else a fuzzy pair) and same kind, then the best score of structure (skeleton similarity, 0.5), control
  * labels (Jaccard, 0.3) and state title (0.2). An overlay or state pairs only when its title
  * matches or its structure is at least half the same. Greedy by score, one to one.
  * Gap and bounded nodes on either side never pair: a reference one is ref-only with its reason.
  */
-export function pairNodes(refDirs, cloneDirs, { scope } = {}) {
+export function pairNodes(refDirs, cloneDirs, { scope, pairMap = null } = {}) {
   const refAll = loadNodes(refDirs);
   const ref = scoped(refAll, scope);
   const cloneAll = loadNodes(cloneDirs);
-  const live = (n) => n.status !== "gap" && n.status !== "bounded";
-  const keyOf = (n) => {
-    try {
-      return viewKey(n.href ?? n.url);
-    } catch {
-      return n.url;
-    }
-  };
+  const live = liveNode;
+  const keyOf = nodeKey;
   const cloneBy = new Map();
   for (const c of cloneAll.values()) {
     if (!live(c.n)) continue;
@@ -260,6 +445,8 @@ export function pairNodes(refDirs, cloneDirs, { scope } = {}) {
   }
   const labels = new Map();
   const labelsOf = ({ n, dir }) => labels.get(`${dir}|${n.id}`) ?? labels.set(`${dir}|${n.id}`, controlLabels(n, dir)).get(`${dir}|${n.id}`);
+  const pages = pairPages(ref, cloneAll, pairMap, { labelsOf });
+  const target = (n) => pages.get(keyOf(n))?.clone ?? null;
 
   const candidates = [];
   const refOnly = [];
@@ -269,7 +456,7 @@ export function pairNodes(refDirs, cloneDirs, { scope } = {}) {
       refOnly.push({ r, reason });
       continue;
     }
-    const pool = cloneBy.get(`${keyOf(r.n)}|${r.n.kind}`) ?? [];
+    const pool = cloneBy.get(`${target(r.n)}|${r.n.kind}`) ?? [];
     for (const c of pool) {
       const structure = similarity(r.n.signature ?? [], c.n.signature ?? []);
       const title = titlesMatch(stateTitle(r.n), stateTitle(c.n)) ? 1 : 0;
@@ -290,19 +477,22 @@ export function pairNodes(refDirs, cloneDirs, { scope } = {}) {
   }
   for (const r of ref.values()) if (!refReason(r.n) && !usedR.has(r.n.id)) refOnly.push({ r, reason: null });
 
-  const refKeys = new Set([...ref.values()].map((r) => keyOf(r.n)));
+  const refKeys = new Set([...ref.values()].flatMap((r) => [keyOf(r.n), target(r.n)]).filter(Boolean));
   const cloneTagged = [...cloneAll.values()].some(({ n }) => n.scope);
   const cloneOnly = [...cloneAll.values()].filter(({ n }) => live(n) && !usedC.has(n.id) && (!scope || (cloneTagged ? inScopeId(n, scope) : refKeys.has(keyOf(n)))));
 
   const side = ({ n, dir }) => ({ id: n.id, label: n.label, url: n.href ?? n.url, kind: n.kind, dir, scope: n.scope ?? null });
   const round = (v) => Math.round(v * 1000) / 1000;
+  const via = (n) => pages.get(keyOf(n)) ?? { clone: null, source: "none" };
   return {
     at: new Date().toISOString(),
     scope: scope ?? null,
     ref: [refDirs].flat(),
     clone: [cloneDirs].flat(),
-    pairs: pairs.map((x) => ({ key: keyOf(x.r.n), kind: x.r.n.kind, scope: x.r.n.scope ?? null, ref: side(x.r), clone: side(x.c), score: { total: round(x.score), structure: round(x.structure), labels: round(x.labels), title: x.title } })),
-    refOnly: refOnly.map(({ r, reason }) => ({ key: keyOf(r.n), kind: r.n.kind, scope: r.n.scope ?? null, ref: side(r), status: r.n.status, reason: reason ?? "not on the clone" })),
+    pairMap: pairMap ? (pairMap.file ?? "(inline)") : null,
+    pages: [...pages.values()].sort((a, b) => (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0)),
+    pairs: pairs.map((x) => ({ key: keyOf(x.r.n), cloneKey: keyOf(x.c.n), source: via(x.r.n).source, kind: x.r.n.kind, scope: x.r.n.scope ?? null, ref: side(x.r), clone: side(x.c), score: { total: round(x.score), structure: round(x.structure), labels: round(x.labels), title: x.title } })),
+    refOnly: refOnly.map(({ r, reason }) => ({ key: keyOf(r.n), cloneKey: via(r.n).clone, source: via(r.n).source, kind: r.n.kind, scope: r.n.scope ?? null, ref: side(r), status: r.n.status, reason: reason ?? "not on the clone" })),
     cloneOnly: cloneOnly.map((c) => ({ key: keyOf(c.n), kind: c.n.kind, clone: side(c) })),
   };
 }

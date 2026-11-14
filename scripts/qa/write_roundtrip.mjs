@@ -10,44 +10,39 @@
 //     "name": "rename listing",
 //     "write":   { "method": "PATCH", "path": "/api/listings/12", "body": { "name": "Harbor Loft" } },
 //     "expect":  [{ "path": "/api/listings/12", "pointer": "/name", "equals": "Harbor Loft" },
-//                 { "path": "/api/listings?limit=50", "contains": "Harbor Loft" }],
+//                 { "path": "/api/listings?limit=50", "contains": "Harbor Loft" },
+//                 { "method": "POST", "path": "/api/listings/multi_read", "body": { "ids": [12] }, "contains": "Harbor Loft" }],
 //     "page":    { "path": "/listings/12", "text": "Harbor Loft" },
 //     "restore": { "method": "PATCH", "path": "/api/listings/12", "body": { "name": "Seaside Flat" } }
 //   }]
 // Every surface that reads the value belongs in `expect` (list, detail, counters): a write
 // that lands on one surface and not the others is the fan-out defect this exists for.
+// An `expect` row is a read request: GET by default, or `method` + `body` for a read POST
+// (multi_read, search); a non-GET read-back is sent only when the request classifier calls it a
+// read, or an --allow-post regex names it (roundtrip_lib.mjs).
+//
+//   [--allow-post <regex>]...   read-back POSTs the classifier cannot name as reads
 
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 
 import { writeCheckRecord } from "../lib/check-record.mjs";
 import { openClone, settle } from "../lib/pw.mjs";
+import { caller, checkExpect } from "./roundtrip_lib.mjs";
 
 const { values: o } = parseArgs({
   options: {
     spec: { type: "string" },
     api: { type: "string", default: process.env.CLONE_API ?? "http://127.0.0.1:8000" },
     web: { type: "string", default: process.env.CLONE_WEB ?? "http://127.0.0.1:3000" },
+    "allow-post": { type: "string", multiple: true, default: [] },
   },
 });
+const allowPost = o["allow-post"].map((r) => new RegExp(r));
 if (!o.spec) throw new Error("give --spec <writes.json>");
 const rows = JSON.parse(readFileSync(o.spec, "utf8"));
 
-async function call(method, path, body) {
-  const res = await fetch(new URL(path, o.api), { method, headers: body === undefined ? {} : { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
-  const text = await res.text();
-  let json = null;
-  try {
-    json = JSON.parse(text);
-  } catch {}
-  return { status: res.status, text, json };
-}
-
-/** RFC 6901 pointer. */
-function at(doc, pointer) {
-  if (!pointer) return doc;
-  return pointer.split("/").slice(1).reduce((v, k) => (v == null ? undefined : v[k.replace(/~1/g, "/").replace(/~0/g, "~")]), doc);
-}
+const call = caller(o.api);
 
 const fails = [];
 const clone = await openClone();
@@ -59,12 +54,7 @@ try {
       bad(`write ${r.write.method} ${r.write.path} -> ${w.status} ${w.text.slice(0, 120)}`);
       continue;
     }
-    for (const e of r.expect ?? []) {
-      const g = await call("GET", e.path);
-      if (g.status !== 200) bad(`read ${e.path} -> ${g.status}`);
-      else if ("equals" in e && JSON.stringify(at(g.json, e.pointer)) !== JSON.stringify(e.equals)) bad(`read ${e.path}${e.pointer ?? ""} = ${JSON.stringify(at(g.json, e.pointer))}, wrote ${JSON.stringify(e.equals)}`);
-      else if ("contains" in e && !g.text.includes(e.contains)) bad(`read ${e.path} does not contain "${e.contains}"`);
-    }
+    for (const e of [r.expect ?? []].flat()) for (const f of await checkExpect(e, call, { api: o.api, allowPost })) bad(f);
     if (r.page) {
       for (const pass of ["load", "hard reload"]) {
         const page = await clone.context.newPage();

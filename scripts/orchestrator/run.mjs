@@ -26,12 +26,14 @@
 //   verify phase (Phase D)
 //     verify --ref <dir>... --clone <dir> [--scope id] [--node id] [--masks masks.json] [--writes writes.json]
 //            [--styles-allow styles-allow.json] [--ws-map ws-map.json] [--dead-controls]
-//            [--ref-prefix p] [--clone-prefix p] [--dpr 1] [--api url] [--web url]
-//     report [--clone <dir>] [--scope id] [--out report.md]        ref node -> clone node -> each check -> reason
+//            [--ref-prefix p] [--clone-prefix p] [--dpr 1] [--api url] [--web url] [--pair-map pair-map.json]
+//     report [--clone <dir>] [--scope id] [--pair-map pair-map.json] [--out report.md]
+//                                     page pairing source, then ref node -> clone node -> each check -> reason
 //   views
 //     status [--scope id] [--clone <dir>] | tree [--scope id] | live | frontier | route <nodeId> | loops
 //     watch [--port 4777] [--dir d]...                             live tree in the browser: nodes, agents, blockers, replay
-//     compare --ref <dir>... --clone <dir>... [--scope id] [--out diff.md]   walk diff; writes <clone>/pairs.json
+//     compare --ref <dir>... --clone <dir>... [--scope id] [--pair-map pair-map.json] [--out diff.md]
+//                                     walk diff; writes <clone>/pairs.json (page pairing: map / key / fuzzy / none)
 //   (any) --dir <discovery dir>   --cdp <http://127.0.0.1:9222>   --headed   --agent <name> (who the live view shows)
 
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -41,7 +43,7 @@ import { parseArgs } from "node:util";
 
 import { DISCOVERY } from "../lib/pw.mjs";
 import { finish, loadState, nextUnit, packet, plan, progress, saveState, writePacket } from "./build.mjs";
-import { compare, pairNodes, toMarkdown } from "./compare.mjs";
+import { compare, pairNodes, readPairMap, toMarkdown } from "./compare.mjs";
 import { breadcrumbFromAria, isRetryableReason, tagScopes } from "./graph.mjs";
 import { open, save } from "./store.mjs";
 import { countsLine, report, verify, verifyCounts, writePairs } from "./verify.mjs";
@@ -82,6 +84,7 @@ const { values: o, positionals } = parseArgs({
     gaps: { type: "boolean", default: false },
     kind: { type: "string" },
     map: { type: "string" },
+    "pair-map": { type: "string" },
     scope: { type: "string" },
     node: { type: "string" },
     masks: { type: "string" },
@@ -370,11 +373,14 @@ switch (cmd) {
     // compare --ref <dir>... --clone <dir>... [--scope id] [--out diff.md]: the walked-graph diff,
     // plus the node pairs Phase D runs on, in <first clone dir>/pairs.json.
     if (!o.ref?.length || !o.clone?.length) throw new Error("compare needs --ref <dir>... --clone <dir>...");
-    const md = toMarkdown(compare(o.ref, o.clone, { scope: o.scope }));
-    const pairs = pairNodes(o.ref, o.clone);
+    const pairMap = readPairMap(o["pair-map"]);
+    const md = toMarkdown(compare(o.ref, o.clone, { scope: o.scope, pairMap }));
+    const pairs = pairNodes(o.ref, o.clone, { pairMap });
     writePairs(o.clone[0], pairs);
     if (o.out) writeFileSync(o.out, md);
     say(o.out ? `wrote ${o.out}` : md);
+    const by = (k) => pairs.pages.filter((p) => p.source === k).length;
+    say(`views: map ${by("map")} · key ${by("key")} · fuzzy ${by("fuzzy")} (confirm) · none ${by("none")}`);
     say(`pairs ${pairs.pairs.length} · ref-only ${pairs.refOnly.length} · clone-only ${pairs.cloneOnly.length} -> ${join(o.clone[0], "pairs.json")}`);
     break;
   }
@@ -398,7 +404,7 @@ switch (cmd) {
       refDirs: o.ref, cloneDir: o.clone[0], scope: o.scope, node: o.node, masks: o.masks, writes: o.writes,
       stylesAllow: o["styles-allow"], wsMap: o["ws-map"], deadControls: o["dead-controls"],
       refPrefix: o["ref-prefix"], clonePrefix: o["clone-prefix"], dpr: +o.dpr, height: +o.height, api: o.api, web: o.web,
-      log: say,
+      pairMap: readPairMap(o["pair-map"]), log: say,
     });
     say(`VERIFY  ${countsLine(verifyCounts(o.clone[0], o.scope))}`);
     if (r.results.some((x) => !x.verify.passed)) process.exitCode = 1;
@@ -406,7 +412,7 @@ switch (cmd) {
   }
   case "report": {
     const cdir = o.clone?.[0] ?? dir;
-    const md = report(cdir, o.scope);
+    const md = report(cdir, o.scope, { pairMap: readPairMap(o["pair-map"]) });
     const out = o.out ?? join(cdir, "verify", `report${o.scope ? `-${o.scope}` : ""}.md`);
     mkdirSync(dirname(out), { recursive: true });
     writeFileSync(out, md);

@@ -25,6 +25,7 @@ Site-agnostic: nothing here names a target. A build's data lives in its own
 | 8 | Phase D complete per pair: computed style (walker saves `styles.json`), widths (walker saves `widths.json`), websocket reads vs HTTP mirrors (`ws-map.json`), overlays judged on their own region, `--dead-controls`; check records through `../lib/check-record.mjs` with an output folder | `verify.mjs` `verify-checks.mjs` `explore.mjs` `page-probe.mjs` `../qa/human_eye_lib.mjs` `../qa/labels.mjs` | done 2026-11-14 (`test/verify-checks` `test/verify-e2e`) |
 
 | 9 | every interaction kind a first-class edge: right-click, double-click, documented shortcuts and keyboard activation, drag, form input and submit (empty, valid, one invalid value per constraint), uploads; Tab order per node; per-node invariant over every kind; verify's `interactions` check edge by edge. Hash routes in node identity; a scope-driven walk (`--scope-map --scope`, shallow out-of-scope, `--entries-from`); STATE_BOUND never bounds an entry or in-scope page | `interactions.mjs` `explore.mjs` `graph.mjs` `bound.mjs` `compare.mjs` `verify.mjs` `run.mjs` | done 2026-11-14 (`test/interactions` `test/verify-e2e`) |
+| 10 | pages pair across URL schemes: `--pair-map` (exact view keys, `:name` params, regexes on key, URL or route) on compare, verify and report; unmapped views by key, then a flagged fuzzy pair; each view's pairing source in pairs.json and the report. Write round trips read back by a read POST (`multi_read`) the request classifier confirms | `compare.mjs` `verify.mjs` `run.mjs` `../qa/roundtrip_lib.mjs` `../qa/write_roundtrip.mjs` | done 2026-11-14 (`test/pair-map` `test/roundtrip-post`) |
 
 Not done: the walker does not draw on a map or canvas (Chrome does, SKILL.md section 4);
 `graph.html` is regenerated per chunk (`watch` is the streamed view); workers share no graph file, so
@@ -132,8 +133,11 @@ with no reason at all is retried; out of scope, rulings, HTTP 4xx and write-only
 
 ### 10. Phase D per node pair (`verify.mjs`)
 
-`compare.mjs` `pairNodes` pairs each reference node with at most one clone node: same view
-key (path family plus view flags) and kind, best score of skeleton similarity (0.5), control
+`compare.mjs` `pairPages` first pairs each reference view with a clone view: the `--pair-map`
+entry (exact key, `:name` pattern or regex on key, URL or route), else the same view key, else
+(map given) a fuzzy match by structure plus control labels, reported for a person to confirm;
+`pairs.json` `pages` lists each view's source (map / key / fuzzy / none). `pairNodes` then pairs
+each reference node with at most one clone node: same paired view and kind, best score of skeleton similarity (0.5), control
 label overlap (0.3) and state title (0.2), one to one. Leftovers are ref-only (with the gap or
 bounded reason when the walk recorded one, else "not on the clone") and clone-only. `compare`
 and `verify` write them to `<clone>/pairs.json`.
@@ -150,7 +154,7 @@ and runs:
 | `widths` | the saved `widths.json` (`../qa/labels.mjs` labels at the capture width and every sweep width) vs the clone's at the same widths, scoped like the reference | a label that differs at some width beyond what differs at the capture width; no `widths.json` is skipped "ref widths not captured" |
 | `api` | the reference node's captured reads (`inventory.json` + `xhr/`) vs the clone's requests while reaching the node, by `METHOD path-template`; its websocket reads (`wsReads` + `ws/`) vs the clone's HTTP mirror named in `--ws-map` | an operation the clone never calls; a query key, request field or response field on one side only; `ws call not mirrored` |
 | `interactions` | the reference node's rows (`inventory.json` candidates and interactions) vs the clone walk's rows on the paired node (`edgeDiff`, section 11) | an edge that opens nothing on the clone, opens something only on the clone, or opens a node that does not pair; a file input with other accept types or size limit; one line per edge |
-| `writes` | `../qa/write_roundtrip.mjs` on the clone, for rows of `--writes` matching the pair | a failed round trip; a node with write edges or pending writes and no row is skipped, so not verified |
+| `writes` | `../qa/write_roundtrip.mjs` on the clone, for rows of `--writes` matching the pair; an `expect` read-back may be a read POST (`method`, `path`, `body`) the request classifier confirms (`../qa/roundtrip_lib.mjs`) | a failed round trip; a node with write edges or pending writes and no row is skipped, so not verified |
 
 Each check writes `<clone>/verify/<clone node>/<check>.json` through `../lib/check-record.mjs`
 (`writeCheckRecord(name, record, dir)`, shape `{ ran, count, status, reason, at }`) plus
@@ -208,7 +212,7 @@ seeds entries.
 |---|---|---|
 | `discovery/graph.json` | `save()`, atomically (tmp + rename) | the whole graph |
 | `discovery/events.jsonl` | every mutation, append-only | `node.added`, `edge.added`, `template.added`, `node.status` |
-| `<clone>/pairs.json` | `compare`, `verify` | matched pairs, ref-only (with reasons), clone-only |
+| `<clone>/pairs.json` | `compare`, `verify`, `report --pair-map` | page pairing (map / key / fuzzy / none), matched pairs, ref-only (with reasons), clone-only |
 | `discovery/nodes/<id>/` | the walker | `screenshot.png` `dom.html` `aria.yml` `styles.json` `widths.json` `focus.json` `inventory.json` (candidates, interactions, forms, files) `xhr/` `ws/` |
 | `<clone>/verify/<node>/` | `verify` | a record and detail per check, `ref.png` `clone.png` `diff.png` (`*.crop.png` for an overlay) `clone.aria.yml` `clone.styles.json` |
 | `<clone>/verify/report[-scope].md` | `report` | the end-to-end table |
@@ -229,10 +233,10 @@ node run.mjs explore ... --keyboards <repo>/keyboards.json      # documented sho
 node run.mjs explore ... --scope-map scope.json --scope S01,S02 [--expand-out] [--entries-from entries.txt]
 node run.mjs scope --map scope.json                             # tag nodes by component
 node run.mjs status --scope S01 | tree --scope S01              # per scope
-node run.mjs compare --ref <dirs> --clone <dirs> [--scope S01] --out diff.md   # + <clone>/pairs.json
+node run.mjs compare --ref <dirs> --clone <dirs> [--scope S01] [--pair-map pair-map.json] --out diff.md   # + <clone>/pairs.json
 node run.mjs verify --ref <dirs> --clone <dir> [--scope S01] [--node <id>] --masks masks.json --writes writes.json \
-  --ws-map ws-map.json [--styles-allow styles-allow.json] [--dead-controls]
-node run.mjs report --clone <dir> --scope S01                    # <clone>/verify/report-S01.md
+  --ws-map ws-map.json [--styles-allow styles-allow.json] [--dead-controls] [--pair-map pair-map.json]
+node run.mjs report --clone <dir> --scope S01 [--pair-map pair-map.json]   # <clone>/verify/report-S01.md
 node run.mjs plan | next-unit | packet <unit> | unit-done <unit> [--verified] | unit-blocked <unit> --reason "..."
 node run.mjs <any> --agent <name>                                # who the live view shows for this process
 ```

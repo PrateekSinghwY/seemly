@@ -305,9 +305,9 @@ command takes `--dir <graph dir>` (default `never_to_be_pushed/discovery`).
 | `O scope --map <scope.json>` | tag every node with a scope from ordered rules (below) |
 | `O status [--scope id]` · `O tree [--scope id]` · `O live` · `O frontier` · `O route <node>` · `O loops` · `O pending` | views; status adds `VERIFY verified N / built M / ref-only K` once pairs exist |
 | `O plan` · `O next-unit` · `O packet <unit>` · `O unit-done <unit> [--verified]` | build units in dependency order |
-| `O compare --ref <dirs> --clone <dirs> [--scope id] [--out diff.md]` | walked-graph diff, plus `<clone>/pairs.json` |
-| `O verify --ref <dirs> --clone <dir> [--scope id] [--node id] [--masks masks.json] [--writes writes.json] [--styles-allow f] [--ws-map f] [--dead-controls] [--ref-prefix p] [--clone-prefix p] [--dpr 1]` | Phase D per node pair: pixels, structure (with Tab order), style, human eye, widths, api (HTTP and ws), interactions (edge by edge), writes; exits 1 when any pair fails |
-| `O report [--clone <dir>] [--scope id] [--out file]` | markdown: ref node -> clone node -> each check -> reason, then every ref-only node with its reason |
+| `O compare --ref <dirs> --clone <dirs> [--scope id] [--pair-map pair-map.json] [--out diff.md]` | walked-graph diff, plus `<clone>/pairs.json`; prints how many reference views paired by map / key / fuzzy / none |
+| `O verify --ref <dirs> --clone <dir> [--scope id] [--node id] [--masks masks.json] [--writes writes.json] [--styles-allow f] [--ws-map f] [--dead-controls] [--ref-prefix p] [--clone-prefix p] [--dpr 1] [--pair-map pair-map.json]` | Phase D per node pair: pixels, structure (with Tab order), style, human eye, widths, api (HTTP and ws), interactions (edge by edge), writes; exits 1 when any pair fails |
+| `O report [--clone <dir>] [--scope id] [--pair-map pair-map.json] [--out file]` | markdown: each reference view's pairing source (map / key / fuzzy / none, fuzzy flagged to confirm), then ref node -> clone node -> each check -> reason, then every ref-only node with its reason; with `--pair-map`, re-pairs first from the walks pairs.json names |
 
 **scope.json:** `{ "rules": [{ "scope": "S01", "url": "^/app/timecards" }, { "scope": "S02",
 "heading": "^Schedule", "kind": "page" }, ...], "inherit": true }`. A rule names any of `url`
@@ -334,6 +334,23 @@ for GET (else body fields; `"request": "query" | "body"` overrides), response fi
 A ws read with no entry fails as `ws call not mirrored`. masks.json may also carry `"widths":
 { "allow": [{ "category": "buttons", "label": "...", "reason": "..." }] }`.
 
+**pair-map.json** (compare, verify, report): `{ "about": "...", "fuzzy": 0.6, "map": {
+"/metaui#/list/KioskConfiguration": "/administration/kiosk-configurations", "/ia#/dataView/:id":
+"/reports/library/:id", "/metaui#/list/:entity": "/admin/:entity", "re:^/wfc/applications/\\w+/(\\w+)SetupList":
+"/administration/$1" }, "rules": [{ "ref": "/schedule#/(?<view>\\w+)$", "on": "url", "clone":
+"/schedule/$<view>" }] }`. A `map` key is a reference view key (`compare.mjs` `viewKey`: path
+family, view flags, route fragment), matched exactly; a key with `:name` segments matches one
+segment each and fills `:name` on the clone side; `re:<regex>` is a regex. A `rules` entry's `ref`
+is a regex on `on` (`key`, `url` or `route` = path plus hash; all three when omitted). `$1` and
+`$<name>` fill the clone side, which is a view key, route or URL. Exact keys win, then patterns in
+file order; a bare object is read as the map. Unmapped views pair by the same view key, then by a
+fuzzy match (structure 0.5 + control labels 0.5 >= `fuzzy`, default 0.6; `false` turns it off)
+among clone views nothing else claimed. Without a pair map, pairing is by view key only. Overlays,
+modals and states pair inside their page pair by kind, title and structure as always.
+
 **writes.json** (verify): `write_roundtrip.mjs` rows, each with `node` (a ref or clone node id)
-or `at` (a path) saying which pair it belongs to. A node with write edges or pending writes
+or `at` (a path) saying which pair it belongs to. An `expect` row is a read request plus what it
+must return (`pointer` + `equals`, or `contains`): `{ "path": ... }` is a GET; `{ "method": "POST",
+"path": "/api/x/multi_read", "body": {...} }` (or nested as `read`) is a read POST, sent only when
+the request classifier (`safety.mjs`, read-posts auto) calls it a read or `--allow-post` names it. A node with write edges or pending writes
 and no row is not verified: its writes record says which writes have no spec.

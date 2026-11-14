@@ -504,7 +504,18 @@ For every element on every page, before it is done:
 node paired with a clone node, the clone node reached by its replay route (any edge kind: a
 right-click, a key, a drag, typed values, a fixture file), each check a record in
 `<clone>/verify/<node>/<check>.json`. The clone must be walked with the same `--keyboards` as
-the reference, so its edges can be compared:
+the reference, so its edges can be compared.
+
+**Pair pages across URL schemes with `--pair-map`.** A clone rarely keeps the reference's routes
+(`/metaui#/list/X` on the reference, `/administration/x` on the clone); pairing by identical view
+key alone then pairs nothing and every reference node lands in ref-only, so no check runs. Write
+`pair-map.json` (reference view key, `:name` pattern or `re:` regex -> clone view key or route;
+format in `reference/graph.md` "Commands") and pass it to `O compare`, `O verify` and `O report`.
+Inside a mapped page pair, overlays, modals and states pair as before. An unmapped page falls back
+to the same view key, then (map given) to a fuzzy pair by structure plus control labels, which the
+report flags **fuzzy pair: confirm**: confirm each one and add it to the map. The report lists
+every reference page's pairing source (map / key / fuzzy / none); a page paired by `none` was
+never checked.
 
 | check | compares | fails on |
 |---|---|---|
@@ -515,7 +526,7 @@ the reference, so its edges can be compared:
 | `widths` | `widths.json` labels vs the clone's at the same widths | an item that differs at some width beyond what differs at the capture width (that is `structure`'s) |
 | `api` | captured HTTP reads vs the clone's requests; websocket reads vs their HTTP mirrors in `--ws-map` (call name -> method + path) | a missing operation or field; `ws call not mirrored` |
 | `interactions` | every reference edge of every kind (click, right-click, double-click, key, drag, input, submit, upload) vs the clone walk's edge of the same kind on the matched element (`compare.mjs` `edgeDiff`) | the clone's edge leads to a node that does not pair with the reference target, or changes nothing where the reference opened something (or the reverse), or a file input accepts other types or sizes; reported per edge ("right-click on 'Shift 7:00 AM-3:30 PM' opens nothing on the clone"). Write rows belong to `writes`; a shortcut `keyboards.json` declares unimplemented is listed, not failed |
-| `writes` | `write_roundtrip.mjs` for the pair's `--writes` rows | a failed round trip; a write with no row is skipped, so not verified |
+| `writes` | `write_roundtrip.mjs` for the pair's `--writes` rows; each `expect` is a read request, GET or a read POST (`{ "method": "POST", "path": ".../multi_read", "body": {...} }`) the request classifier confirms is a read | a failed round trip; a read-back the classifier calls a write is refused, not sent; a write with no row is skipped, so not verified |
 
 An overlay or modal node is judged on its own region: pixels on its bounding box, structure,
 style, widths and human eye on its subtree. A reference node walked before a check existed (no

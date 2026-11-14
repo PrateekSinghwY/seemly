@@ -436,10 +436,11 @@ export function scopePairs(doc, scope) {
   const hit = (s) => (scope === UNSCOPED ? !s : s === scope);
   const pairs = doc.pairs.filter((p) => hit(p.scope));
   const refOnly = doc.refOnly.filter((p) => hit(p.scope));
-  const keys = new Set([...pairs, ...refOnly].map((p) => p.key));
+  const keys = new Set([...pairs, ...refOnly].flatMap((p) => [p.key, p.cloneKey]).filter(Boolean));
   const tagged = doc.cloneOnly.some((c) => c.clone.scope);
   const cloneOnly = doc.cloneOnly.filter((c) => (tagged ? hit(c.clone.scope) : keys.has(c.key)));
-  return { ...doc, scope, pairs, refOnly, cloneOnly };
+  const pages = doc.pages?.filter((p) => hit(p.scope));
+  return { ...doc, scope, pairs, refOnly, cloneOnly, ...(pages ? { pages } : {}) };
 }
 
 /** verified N / built M / ref-only K (G with a gap or bounded reason), from pairs.json, the clone graph and the records. */
@@ -461,14 +462,33 @@ export const countsLine = (c) =>
 const cell = (v) => (!v ? "not run" : v.status === "n/a" ? "n/a" : v.status === "pass" ? "pass" : v.status === "fail" ? "**FAIL**" : v.status);
 const esc = (s) => String(s ?? "").replace(/\|/g, "\\|").replace(/\n/g, " ");
 
-/** Markdown: ref node -> clone node -> each check -> reason, then every ref-only node with its reason. */
-export function report(cloneDir, scope) {
-  const doc = readPairs(cloneDir);
+const PAIRED_BY = { map: "pair map", key: "same view key", fuzzy: "**fuzzy pair: confirm**", none: "none" };
+
+/**
+ * Markdown: how each reference view paired (map / key / fuzzy / none), then ref node -> clone
+ * node -> each check -> reason, then every ref-only node with its reason. With `pairMap`
+ * (readPairMap), the pairs are first rebuilt from the walks pairs.json names and saved.
+ */
+export function report(cloneDir, scope, { pairMap = null } = {}) {
+  let doc = readPairs(cloneDir);
   if (!doc) throw new Error(`no pairs.json in ${cloneDir}: run compare or verify first`);
+  if (pairMap) {
+    doc = pairNodes(doc.ref, doc.clone, { pairMap });
+    writePairs(cloneDir, doc);
+  }
   const graph = JSON.parse(readFileSync(join(cloneDir, "graph.json"), "utf8"));
   const s = scopePairs(doc, scope);
   const c = verifyCounts(cloneDir, scope);
-  const L = [`# Phase D report${scope ? `: ${scope}` : ""}`, "", `${countsLine(c)}. Pairs from ${doc.at}.`, ""];
+  const L = [`# Phase D report${scope ? `: ${scope}` : ""}`, "", `${countsLine(c)}. Pairs from ${doc.at}${doc.pairMap ? `, pair map ${doc.pairMap}` : ""}.`, ""];
+  if (s.pages) {
+    const by = (k) => s.pages.filter((p) => p.source === k).length;
+    L.push("## Page pairing: reference view -> clone view", "", `map ${by("map")} · key ${by("key")} · fuzzy ${by("fuzzy")} · none ${by("none")}`, "", "| reference view | clone view | paired by | note |", "|---|---|---|---|");
+    for (const p of s.pages) {
+      const note = p.source === "fuzzy" ? `score ${p.score}: confirm, then add it to the pair map` : p.source === "map" ? `rule \`${esc(p.rule)}\`${p.reached === false ? "; the clone walk never reached this view" : ""}` : p.source === "none" ? (doc.pairMap ? "no map entry, no same key, no fuzzy match" : "no same key (give --pair-map)") : "";
+      L.push(`| \`${esc(p.ref)}\` | ${p.clone ? `\`${esc(p.clone)}\`` : "-"} | ${PAIRED_BY[p.source] ?? p.source} | ${note} |`);
+    }
+    L.push("");
+  } else L.push("Page pairing not recorded in this pairs.json: re-run compare or verify.", "");
   L.push("## Built: reference node -> clone node", "", "| reference node | clone node | pixels | structure | style | human eye | widths | api | interactions | writes | verified | reason |", "|---|---|---|---|---|---|---|---|---|---|---|---|");
   for (const p of s.pairs) {
     const n = graph.nodes[p.clone.id];
@@ -670,15 +690,16 @@ function refWsReads(art, inv) {
  * clone node id), `masks` (masks.json), `writes` (write_roundtrip rows, each with `node` or `at`),
  * `stylesAllow` (styles-allow.json), `wsMap` (ws-map.json), `deadControls` (click every enabled
  * control of every clone node, writes aborted), `refPrefix`/`clonePrefix` (API path prefixes),
- * `dpr`, `height` (viewport), `api`/`web` (clone bases for the round trip). Returns the per-pair
+ * `dpr`, `height` (viewport), `api`/`web` (clone bases for the round trip), `pairMap` (readPairMap:
+ * reference view -> clone view, compare.mjs pairPages). Returns the per-pair
  * results; saves records, pairs.json and the graph.
  */
 export async function verify({
   refDirs, cloneDir, scope, node, masks: masksFile, writes: writesFile, stylesAllow: stylesAllowFile, wsMap: wsMapFile, deadControls: dead = false,
-  refPrefix = "", clonePrefix = "", dpr = 1, height = 900, api, web, log = (s) => console.error(s),
+  refPrefix = "", clonePrefix = "", dpr = 1, height = 900, api, web, pairMap = null, log = (s) => console.error(s),
 } = {}) {
   refDirs = [refDirs].flat();
-  const doc = pairNodes(refDirs, [cloneDir]);
+  const doc = pairNodes(refDirs, [cloneDir], { pairMap });
   writePairs(cloneDir, doc);
   let pairs = scopePairs(doc, scope).pairs;
   if (node) pairs = pairs.filter((p) => p.ref.id === node || p.clone.id === node);
