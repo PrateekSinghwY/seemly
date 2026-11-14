@@ -311,3 +311,11 @@ change auto-layout column widths).
   Allow-list the auth refresh host, abort only the app's own write hosts.
 - **Intercept narrowly**: a catch-all `page.route('**/*')` can break cross-origin auth (CORS on
   the token refresh) so the app never reaches its write. Route only the app's write host.
+
+
+## robots.txt before the first automated request, per host (2026-11-02, ukg-kronos)
+
+Every host gets its robots.txt read before the first scripted request of any kind:
+crawler, curl, Playwright, link checker. Judge it by longest-match (RFC 9309), not with
+Python's `urllib.robotparser`, which applies the first match. A disallowed host is read
+by a person in Chrome only. Record the verdict per host in the build's crawl log.
