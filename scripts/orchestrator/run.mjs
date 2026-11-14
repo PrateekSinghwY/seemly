@@ -13,7 +13,7 @@
 //             [--entries-from <file>]                              entry pages: one URL per line, or a JSON list / route map
 //             [--no-interactions]                                  clicks only (no right-click, keys, drags, forms, uploads)
 //     visit <url>                                                  add one more entry page
-//     requeue <nodeId> | requeue --failed | requeue --gaps [--reason <r>] | gap <nodeId> --reason "..."
+//     requeue <nodeId> | requeue --failed | requeue --gaps [--reason <r>] | requeue --kind overlay,modal,menu,state | gap <nodeId> --reason "..."
 //                                                                  corrections; --gaps puts back every gap with a retryable reason
 //     scope --map <scope.json>                                     tag every node with a scope (component id)
 //     pending                                                      writes waiting for BLOCKED
@@ -75,6 +75,7 @@ const { values: o, positionals } = parseArgs({
     clone: { type: "string", multiple: true },
     out: { type: "string" },
     gaps: { type: "boolean", default: false },
+    kind: { type: "string" },
     map: { type: "string" },
     scope: { type: "string" },
     node: { type: "string" },
@@ -268,6 +269,15 @@ switch (cmd) {
       save(g, dir);
       for (const n of done) say(`requeued ${n.id} ${n.label}`);
       say(`requeued ${done.length} gap node(s)`);
+      break;
+    }
+    // --kind: nodes of those kinds with no content key (an older graph merged look-alike overlays),
+    // and the nodes that open them, so the next walk splits them by content.
+    if (o.kind) {
+      const done = g.requeueKinds(o.kind.split(",").map((k) => k.trim()).filter(Boolean));
+      save(g, dir);
+      for (const n of done) say(`requeued ${n.id} ${n.label}`);
+      say(`requeued ${done.length} node(s) for a content-key re-read`);
       break;
     }
     // --failed: every node a run gave up on (status gap, detail "explore failed ..."), e.g. after

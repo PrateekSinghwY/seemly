@@ -70,8 +70,51 @@ export function probe({ scopeCss = null, sigOnly = false, maxDepth = 18, maxModu
     return IMPLICIT[el.tagName] ?? "generic";
   };
 
+  // What a surface says, not how it is built: its title plus the sorted set of its controls'
+  // accessible names, digits as #. Data is left out (controls in rows, cells, options and tree
+  // items, field values, long runs of look-alike siblings), so a list does not split per row.
+  const contentKeyOf = (root) => {
+    const norm = (s) => text(s, 60).toLowerCase().replace(/\d+/g, "#");
+    const byIds = (ids) => (ids ? ids.split(/\s+/).map((id) => document.getElementById(id)?.innerText ?? "").join(" ") : "");
+    const titleEl = root.querySelector("h1,h2,h3,h4,h5,h6,[role=heading]");
+    const title = norm(root.getAttribute?.("aria-label") || byIds(root.getAttribute?.("aria-labelledby")) || (titleEl && visible(titleEl) ? titleEl.innerText : ""));
+    const CTRL = "button,a[href],summary,select,textarea,input:not([type=hidden]),[role=button],[role=link],[role=menuitem],[role=menuitemradio],[role=menuitemcheckbox],[role=tab],[role=switch],[role=checkbox],[role=radio],[role=combobox]";
+    const DATA = "tr,[role=row],[role=option],[role=gridcell],[role=cell],[role=treeitem],[role=listitem],[role=listbox],[role=grid],[role=tree],table";
+    const pathOf = (el) => {
+      const p = [];
+      for (let e = el; e && e !== root; e = e.parentElement) p.unshift(e.tagName);
+      return p.join("/");
+    };
+    const COMMAND = new Set(["menuitem", "menuitemradio", "menuitemcheckbox", "tab"]);
+    // A control inside a repeated container (three or more siblings of one tag and class, up to
+    // three levels above it) is a row of data, not a command of the surface.
+    const inRow = (el) => {
+      let e = el.parentElement;
+      for (let i = 0; i < 3 && e && e !== root; i++, e = e.parentElement) {
+        const sibs = e.parentElement ? [...e.parentElement.children].filter((x) => x.tagName === e.tagName && x.className === e.className) : [];
+        if (sibs.length >= 3) return true;
+      }
+      return false;
+    };
+    const rows = [];
+    for (const el of root.querySelectorAll(CTRL)) {
+      if (!visible(el) || el.closest(DATA) || (!COMMAND.has(roleOf(el)) && inRow(el))) continue;
+      const field = ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName) && !["button", "submit", "reset"].includes((el.getAttribute("type") || "").toLowerCase());
+      const name = field
+        ? el.getAttribute("aria-label") || byIds(el.getAttribute("aria-labelledby")) || el.labels?.[0]?.innerText || el.getAttribute("placeholder") || ""
+        : el.getAttribute("aria-label") || byIds(el.getAttribute("aria-labelledby")) || el.innerText || el.getAttribute("title") || el.value || "";
+      const n = norm(name);
+      if (!/[a-z]/.test(n)) continue;
+      rows.push({ path: pathOf(el), name: `${roleOf(el)}:${n}` });
+    }
+    const perPath = new Map();
+    for (const r of rows) perPath.set(r.path, (perPath.get(r.path) ?? 0) + 1);
+    const names = [...new Set(rows.filter((r) => perPath.get(r.path) < 8).map((r) => r.name))].sort();
+    return fnv(`${title}\n${names.join("|")}`);
+  };
+
   const root = (scopeCss && document.querySelector(scopeCss)) || document.body;
-  if (sigOnly) return { url: location.href, signature: sigOf(root) };
+  if (sigOnly) return { url: location.href, signature: sigOf(root), contentKey: contentKeyOf(root) };
   const SEL = [
     "a[href]", "button", "summary", "select", "textarea", "input:not([type=hidden])", "[onclick]", "[tabindex='0']",
     "[aria-haspopup]", "[aria-expanded]",
@@ -131,6 +174,7 @@ export function probe({ scopeCss = null, sigOnly = false, maxDepth = 18, maxModu
     title: document.title,
     heading,
     signature: sigOf(root),
+    contentKey: contentKeyOf(root),
     modules,
     candidates,
     overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,

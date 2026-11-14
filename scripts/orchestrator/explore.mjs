@@ -24,7 +24,7 @@ import { join } from "node:path";
 import { openReference, settle } from "../lib/pw.mjs";
 import { similarity } from "./algorithms.mjs";
 import { STATE_BOUND, admit, inScope, repeatGroup } from "./bound.mjs";
-import { scopeByRules } from "./graph.mjs";
+import { KEYED_KINDS, scopeByRules } from "./graph.mjs";
 import { INTERACTION_UNFIRED, LISTENER_HOOK, focusOrder, interactionInvariant, locateFor, perform, readShortcuts, replayEdge, runInteractions } from "./interactions.mjs";
 import { DEFAULT_WIDTHS, readLabels } from "../qa/labels.mjs";
 import { FLOATING_SEL, clearMarks, markFloating, newOverlays, openFloating, openOnLoad, probe, sessionState, styleManifest } from "./page-probe.mjs";
@@ -173,7 +173,9 @@ export async function dismissOnLoad(p) {
   for (let round = 0; round < 3; round++) {
     const [ov] = await p.evaluate(openOnLoad);
     if (!ov || seen.some((s) => s.name === ov.name)) break;
-    ov.signature = (await p.evaluate(probe, { scopeCss: ov.css, sigOnly: true })).signature;
+    const read = await p.evaluate(probe, { scopeCss: ov.css, sigOnly: true });
+    ov.signature = read.signature;
+    ov.contentKey = read.contentKey;
     seen.push(ov);
     await p.keyboard.press("Escape");
     await p.waitForTimeout(300);
@@ -339,6 +341,8 @@ export async function explore(g, dir, opts = {}) {
   });
 
   const sigOf = async (scopeCss = null) => (await page.evaluate(probe, { scopeCss, sigOnly: true })).signature;
+  /** Skeleton plus content key (page-probe.mjs `contentKey`), for a surface about to become a node. */
+  const readOf = async (scopeCss = null) => page.evaluate(probe, { scopeCss, sigOnly: true });
 
   // ---------- session and transient errors, on every navigation ----------
 
@@ -485,22 +489,30 @@ export async function explore(g, dir, opts = {}) {
   function recordOnLoad(pageNode, overlays) {
     for (const ov of overlays) {
       const kind = KIND_OF_ROLE[ov.role] ?? "modal";
-      const { node, isNew } = stateNode({ url: pageNode.href ?? pageNode.url, state: `on-load:${ov.name}`, signature: ov.signature, kind, label: `on load: ${ov.name}` });
+      const { node, isNew } = stateNode({ url: pageNode.href ?? pageNode.url, state: `on-load:${ov.name}`, signature: ov.signature, contentKey: ov.contentKey, kind, label: `on load: ${ov.name}` });
       if (isNew) g.annotate(node.id, { scope: ov.css });
       g.addEdge({ from: pageNode.id, to: node.id, kind: "redirect", element: { name: "(opens on load)" } });
     }
   }
 
   /**
-   * A surface on this URL already in the graph with the same skeleton, else a new node. An
-   * in-place state matches the page itself too, so closing a modal leads back to its page
-   * instead of minting a copy of it.
+   * A surface on this URL already in the graph with the same skeleton and the same content key,
+   * else a new node. Two confirms with one markup and different words are two nodes (one
+   * template). An in-place state matches the page itself too (a page has no key), so closing a
+   * modal leads back to its page instead of minting a copy of it. A node from an older graph has
+   * no key: the first surface that matches it by skeleton gives it its key, so a look-alike with
+   * another key then becomes a node of its own.
    */
-  function stateNode({ url, state, signature, kind, label }) {
+  function stateNode({ url, state, signature, kind, label, contentKey = null }) {
     const family = kind === "state" ? ["page", "state"] : [kind];
-    const same = g.nodesAt(url).find((m) => family.includes(m.kind) && similarity(m.signature, signature) >= SAME_SURFACE);
-    if (same) return { node: same, isNew: false };
-    return g.addNode({ url, state, signature, kind, label });
+    const alike = g.nodesAt(url).filter((m) => family.includes(m.kind) && similarity(m.signature, signature) >= SAME_SURFACE);
+    const keyed = (m) => m.kind === "page" || !contentKey;
+    const same = alike.find((m) => keyed(m) || m.contentKey === contentKey) ?? alike.find((m) => !m.contentKey);
+    if (same) {
+      if (contentKey && !same.contentKey && same.kind !== "page") same.contentKey = contentKey;
+      return { node: same, isNew: false };
+    }
+    return g.addNode({ url, state, signature, kind, label, contentKey });
   }
 
   /** An out-of-scope destination: a gap node, with its reason. */
@@ -589,6 +601,14 @@ export async function explore(g, dir, opts = {}) {
    */
   async function observe(n, c, { kind = "click", element, before, urlBefore, rawBefore, mark, loc, expandedBefore, out, change, changeBefore, stateKey }) {
     const link = (k, node, request = null) => {
+      // A result an older graph recorded for this same control under a look-alike it was merged
+      // into (same kind and skeleton family, another content key) is stale once the split is read.
+      if (node.contentKey) {
+        for (const e of [...(g.out.get(n.id) ?? [])]) {
+          const t = g.data.nodes[e.to];
+          if (e.to !== node.id && e.kind === k && e.element?.name === element.name && (e.element?.nth ?? 0) === (element.nth ?? 0) && t.kind === node.kind && t.template === node.template && t.contentKey && t.contentKey !== node.contentKey) g.removeEdge(e.id);
+        }
+      }
       g.addEdge({ from: n.id, to: node.id, kind: k, element, request, via: k === "write" && kind !== "click" ? kind : undefined });
       out.children.push(node.id);
     };
@@ -639,13 +659,13 @@ export async function explore(g, dir, opts = {}) {
       // A tooltip after a click is the pointer resting on something, not what the click opened.
       const ov = (await page.evaluate(newOverlays, FLOATING_SEL)).find((o) => o.role !== "tooltip");
       if (ov) {
-        const sig = await sigOf(ov.css);
+        const { signature: sig, contentKey } = await readOf(ov.css);
         const okind = KIND_OF_ROLE[ov.role] ?? "overlay";
-        const { node } = stateNode({ url: page.url(), state: `${okind}:${ov.name || c.name}`, signature: sig, kind: okind, label: `${okind}: ${ov.name || c.name}` });
+        const { node } = stateNode({ url: page.url(), state: `${okind}:${ov.name || c.name}`, signature: sig, contentKey, kind: okind, label: `${okind}: ${ov.name || c.name}` });
         link(kindOf(), node, request);
         out.outcome = "overlay";
       } else {
-        const after = await sigOf();
+        const { signature: after, contentKey } = await readOf();
         const expandedAfter = loc ? await loc.getAttribute("aria-expanded").catch(() => null) : null;
         const changeAfter = change ? await change.read().catch(() => null) : null;
         const changed = change ? changeAfter !== changeBefore : false;
@@ -655,14 +675,14 @@ export async function explore(g, dir, opts = {}) {
           // An interaction that reads its own state (a form's validation, a handle's geometry, the
           // text an upload shows): its result is named by the interaction (or by that state), never
           // merged by skeleton into another surface that happens to look alike.
-          const { node } = g.addNode({ url: page.url(), state: change.key ? change.key(changeAfter) : stateKey, signature: after, kind: "state", label: change.label });
+          const { node } = g.addNode({ url: page.url(), state: change.key ? change.key(changeAfter) : stateKey, signature: after, contentKey, kind: "state", label: change.label });
           if (node.id !== n.id) {
             link(kindOf(), node, request);
             out.outcome = "state";
           }
         } else if (reshaped || (expandedBefore !== expandedAfter && expandedAfter === "true")) {
           const state = stateKey ?? `${c.role}:${c.name}`;
-          const { node } = stateNode({ url: page.url(), state, signature: after, kind: "state", label: `${kind === "click" ? "" : `${kind} `}${c.role}: ${c.name}` });
+          const { node } = stateNode({ url: page.url(), state, signature: after, contentKey, kind: "state", label: `${kind === "click" ? "" : `${kind} `}${c.role}: ${c.name}` });
           if (node.id !== n.id) {
             link(kindOf(), node, request);
             out.outcome = "state";
@@ -700,9 +720,9 @@ export async function explore(g, dir, opts = {}) {
       await page.waitForTimeout(350);
       const ov = (await page.evaluate(newOverlays, FLOATING_SEL))[0];
       if (ov) {
-        const sig = await sigOf(ov.css);
+        const { signature: sig, contentKey } = await readOf(ov.css);
         const kind = KIND_OF_ROLE[ov.role] ?? "overlay";
-        const { node } = stateNode({ url: page.url(), state: `${kind}:${ov.name || c.name}`, signature: sig, kind, label: `${kind}: ${ov.name || c.name}` });
+        const { node } = stateNode({ url: page.url(), state: `${kind}:${ov.name || c.name}`, signature: sig, contentKey, kind, label: `${kind}: ${ov.name || c.name}` });
         g.addEdge({ from: n.id, to: node.id, kind: "hover", element });
         out.children.push(node.id);
         out.outcome = "hover-overlay";
@@ -813,6 +833,8 @@ export async function explore(g, dir, opts = {}) {
     const scopeCss = fresh ?? n.info?.scope ?? null;
     const r = await page.evaluate(probe, { scopeCss });
     // A placeholder (found bounded or unreachable) walked for real: read its skeleton now.
+    // A node from an older graph (no content key) takes the key of what its route opens now.
+    if (KEYED_KINDS.includes(n.kind) && !n.contentKey && r.contentKey) n.contentKey = r.contentKey;
     if (n.kind === "page" && n.signature?.length === 1 && ["bounded", "unreachable"].includes(n.signature[0])) g.reread(n.id, { signature: r.signature, modules: r.modules, label: r.heading || r.title || undefined });
     const bodies = (await Promise.all(net.bodies)).filter(Boolean);
     const frames = net.ws;

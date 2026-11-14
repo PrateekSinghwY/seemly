@@ -21,7 +21,11 @@ node_id = hash( canonical_url_without_tracking_params , structural_signature )
 
 `structural_signature` is the DOM skeleton with text and attribute values stripped:
 element tag path, roles, module signatures, order. Two pages with the same skeleton and
-different content (the NBA and WNBA homes) are **two nodes, one template**.
+different content (the NBA and WNBA homes) are **two nodes, one template**. An overlay, modal, menu or
+state adds a **content key** to that pair: its title plus the sorted names of its controls (digits
+as #; controls in rows, cells, options and long look-alike runs left out as data), so two confirms
+with one markup and different words are two nodes, one template, while a list does not split per
+row (`page-probe.mjs` `contentKey`; an older keyless node keeps its id until `O requeue --kind`).
 
 **Template** = the equivalence class of nodes sharing a structural signature above a
 similarity threshold (default 0.92 on tag-path multiset overlap). One template maps to

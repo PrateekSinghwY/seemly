@@ -13,6 +13,8 @@
 //   /kit/    every interaction kind besides a click (`kitBody`, shared with pair.mjs): a
 //            right-click glance, a double-click panel, a drag handle, a documented shortcut
 //            (alt+m), a form with a required and a pattern field, a file input
+//   /conf/   one confirm dialog two buttons fill with different words (Approve / Sign off), and
+//            one list overlay two buttons fill with different rows (Team A / Team B)
 //   /spa/    a hash-routed app (/spa/app#/list/Kiosk, #/list/Categories, #/item/N), a page whose
 //            plain fragments (#one, #two) rebuild it, and a deep admin area out of scope
 
@@ -114,6 +116,25 @@ const plain = (title, body) => `<!doctype html><html><head><title>${title}</titl
 const flakyHome = plain("Flaky", `<h1>Flaky</h1><nav><a href="/flaky/reports">Reports</a> <a href="/flaky/down">Down</a></nav>`);
 const sessHome = plain("Session", `<h1>Session</h1><button onclick="fetch('/sess/api/expire')">Expire session</button> <a href="/sess/team">Team</a>`);
 const login = plain("Sign in", `<h1>Sign in</h1><form><label>User <input name="u"></label><label>Password <input type="password" name="p"></label><button type="button">Sign in</button></form>`);
+
+// One dialog element, one markup, filled per opener: the content key must split the confirms
+// (two nodes, one template) and must not split the team list by its rows.
+const confHome = plain("Timecards", `<h1>Timecards</h1>
+<button onclick="ask('Approve timecard','Are you sure you want to approve?','Yes, approve','Cancel')">Approve</button>
+<button onclick="ask('Sign-off','Are you sure you want to sign-off?','Sign off','Not now')">Sign-off period</button>
+<button onclick="team(['Alex Doe','Sam Rivera','Priya Natarajan'])">Team A</button>
+<button onclick="team(['Jordan Lee','Chris Park','Taylor Kim'])">Team B</button>
+<div id="confirm" role="dialog" style="position:fixed;z-index:50;inset:20% 30%;background:#fff;border:1px solid #333" hidden>
+<h2 id="ct"></h2><p id="cb"></p><div><button id="c1" onclick="shut()"></button> <button id="c2" onclick="shut()"></button></div></div>
+<div id="team" role="dialog" style="position:fixed;z-index:50;inset:20% 30%;background:#fff;border:1px solid #333" hidden>
+<h2>Team members</h2><ul id="tl"></ul><button onclick="shut()">Close</button></div>
+<script>
+const $=(id)=>document.getElementById(id);
+function shut(){$('confirm').hidden=true;$('team').hidden=true}
+function ask(t,b,y,n){$('ct').textContent=t;$('cb').textContent=b;$('c1').textContent=y;$('c2').textContent=n;$('confirm').hidden=false}
+function team(rows){$('tl').innerHTML=rows.map((r)=>'<li><button onclick="0">'+r+'</button></li>').join('');$('team').hidden=false}
+document.addEventListener('keydown',(e)=>{if(e.key==='Escape')shut()});
+</script>`);
 
 /**
  * The interaction kit. `variant` "ref" is the full behaviour; "clone" differs in exactly three
@@ -264,6 +285,7 @@ export function start() {
       if (url.pathname === "/kit/") return html(plain("Kit", kitBody("ref", "/kit/api")));
       if (req.method === "POST") return json({ ok: true });
     }
+    if (url.pathname === "/conf/") return html(confHome);
     if (url.pathname.startsWith("/spa/")) {
       if (url.pathname === "/spa/") return html(plain("Spa", `<h1>Spa</h1><nav><a href="/spa/app">App</a> <a href="/spa/admin">Admin</a></nav>`));
       if (url.pathname === "/spa/app") return html(spaApp(4));

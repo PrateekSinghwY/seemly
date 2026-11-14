@@ -69,9 +69,19 @@ export function routeHash(raw, { anyHash = false } = {}) {
   }
 }
 
-export function nodeId(url, signature, state = "", opts = {}) {
-  return "n_" + createHash("sha1").update(`${canonicalUrl(url, opts)}\n${state}\n${signature.join("\n")}`).digest("hex").slice(0, 12);
+/**
+ * Node identity. Pages: canonical URL + skeleton. An overlay, modal, menu or state also carries a
+ * content key (its title plus the sorted names of its controls, page-probe.mjs `contentKey`), so two
+ * confirms with the same markup and different words are two nodes. A node without one (an older
+ * graph) keeps the id it was given.
+ */
+export function nodeId(url, signature, state = "", opts = {}, contentKey = null) {
+  const key = contentKey ? `\nkey:${contentKey}` : "";
+  return "n_" + createHash("sha1").update(`${canonicalUrl(url, opts)}\n${state}\n${signature.join("\n")}${key}`).digest("hex").slice(0, 12);
 }
+
+/** The node kinds whose identity includes a content key (pages keep URL + skeleton). */
+export const KEYED_KINDS = ["overlay", "modal", "menu", "state"];
 
 // ---------- gap reasons ----------
 
@@ -246,9 +256,10 @@ export class Graph {
    * module's own skeleton so module archetypes cluster the same way templates do.
    * Returns `{ node, isNew }`; a node already in the graph is returned untouched (dedupe).
    */
-  addNode({ url, signature, state = "", kind = "page", label, entry = false, interactive = 0, modules = [], inScope = true, bound }) {
+  addNode({ url, signature, state = "", kind = "page", label, entry = false, interactive = 0, modules = [], inScope = true, bound, contentKey = null }) {
     const canon = { anyHash: !!this.data.meta.hashRoutes };
-    const id = nodeId(url, signature, state, canon);
+    const key = KEYED_KINDS.includes(kind) ? contentKey : null;
+    const id = nodeId(url, signature, state, canon, key);
     if (this.data.nodes[id]) return { node: this.data.nodes[id], isNew: false };
     const node = {
       id,
@@ -262,6 +273,7 @@ export class Graph {
       depth: entry ? 0 : Infinity,
       interactive,
       signature,
+      ...(key ? { contentKey: key } : {}),
       modules: modules.map((m) => this.#classifyModule(m)),
       template: null,
       status: !inScope ? "gap" : bound ? "bounded" : "frontier",
@@ -421,6 +433,18 @@ export class Graph {
         }
       }
     }
+  }
+
+  /** Drop an edge (a stale result the same element no longer leads to). */
+  removeEdge(id) {
+    const e = this.data.edges[id];
+    if (!e) return;
+    delete this.data.edges[id];
+    const list = this.out.get(e.from);
+    if (list) this.out.set(e.from, list.filter((x) => x.id !== id));
+    const t = this.data.templates[this.data.nodes[e.to]?.template];
+    if (t && t.inDegree > 0) t.inDegree--;
+    this.#emit("edge.removed", { edge: e });
   }
 
   #index(e) {
@@ -596,6 +620,26 @@ export class Graph {
       n.attempts = 0;
       delete n.gapReason;
       this.setStatus(n.id, "frontier", null);
+      out.push(n);
+    }
+    return out;
+  }
+
+  /**
+   * `O requeue --kind overlay,modal,...`: nodes of those kinds that have no content key (an older
+   * graph merged look-alike overlays into one) back on the frontier, with the nodes that open them,
+   * so the next walk reads each one's key and splits what was merged. Returns the requeued nodes.
+   */
+  requeueKinds(kinds, { all = false } = {}) {
+    const want = new Set(kinds);
+    const picked = Object.values(this.data.nodes).filter((n) => want.has(n.kind) && (all || !n.contentKey) && n.status !== "gap");
+    const ids = new Set(picked.map((n) => n.id));
+    for (const e of Object.values(this.data.edges)) if (ids.has(e.to) && e.kind !== "write" && this.data.nodes[e.from].status !== "gap") ids.add(e.from);
+    const out = [];
+    for (const id of ids) {
+      const n = this.data.nodes[id];
+      n.attempts = 0;
+      this.setStatus(id, "frontier", null);
       out.push(n);
     }
     return out;
