@@ -38,12 +38,13 @@ import { deflateSync, inflateSync } from "node:zlib";
 import * as zlib from "node:zlib";
 
 import { writeCheckRecord } from "../lib/check-record.mjs";
-import { REPO, playwright, settle } from "../lib/pw.mjs";
+import { REPO, SRGB_ARGS, playwright, settle } from "../lib/pw.mjs";
 import { keyPaths, template } from "../qa/api_diff.mjs";
 import { deadControls, inspect, unnamed } from "../qa/human_eye_lib.mjs";
 import { readLabels } from "../qa/labels.mjs";
 import { edgeDiff, interactionsReason, pairNodes } from "./compare.mjs";
 import { UNSCOPED } from "./graph.mjs";
+import { toSrgb } from "./png-color.mjs";
 import { open, save } from "./store.mjs";
 import { cropImage, readStylesAllow, shiftRects, styleDiff, styleReason, unionRect, widthsDiff, widthsReason, wsDiff, wsReason } from "./verify-checks.mjs";
 
@@ -57,12 +58,16 @@ const NA = "not applicable";
 
 const PNG_SIG = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 
-/** Decode an 8-bit, non-interlaced PNG (what Chrome screenshots are) to RGBA. */
+/**
+ * Decode an 8-bit, non-interlaced PNG (what Chrome screenshots are) to raw RGBA samples. `color`
+ * holds the colour chunks (iCCP, sRGB, gAMA, cHRM) for `toSrgb`: the samples are not converted here.
+ */
 export function decodePng(buf) {
   if (!buf.subarray(0, 8).equals(PNG_SIG)) throw new Error("not a PNG");
   let pos = 8;
   let width, height, depth, type, interlace, palette, trns;
   const idat = [];
+  const color = {};
   while (pos < buf.length) {
     const len = buf.readUInt32BE(pos);
     const kind = buf.toString("latin1", pos + 4, pos + 8);
@@ -71,7 +76,15 @@ export function decodePng(buf) {
     else if (kind === "PLTE") palette = data;
     else if (kind === "tRNS") trns = data;
     else if (kind === "IDAT") idat.push(data);
-    else if (kind === "IEND") break;
+    else if (kind === "iCCP") {
+      const nul = data.indexOf(0);
+      color.iccp = { name: data.toString("latin1", 0, nul), profile: Buffer.from(data.subarray(nul + 2)) };
+    } else if (kind === "sRGB") color.srgb = true;
+    else if (kind === "gAMA") color.gama = data.readUInt32BE(0) / 100000;
+    else if (kind === "cHRM") {
+      const v = (k) => data.readUInt32BE(4 * k) / 100000;
+      color.chrm = { white: [v(0), v(1)], red: [v(2), v(3)], green: [v(4), v(5)], blue: [v(6), v(7)] };
+    } else if (kind === "IEND") break;
     pos += 12 + len;
   }
   if (depth !== 8 || interlace) throw new Error(`unsupported PNG (bit depth ${depth}, interlace ${interlace})`);
@@ -117,7 +130,7 @@ export function decodePng(buf) {
     }
     rgba.set([r, g, b, al], i * 4);
   }
-  return { width, height, data: rgba };
+  return { width, height, data: rgba, color };
 }
 
 const CRC = (() => {
@@ -135,8 +148,8 @@ const crc32 = zlib.crc32 ?? ((b) => {
   return (c ^ -1) >>> 0;
 });
 
-/** Encode RGBA as a PNG (filter 0): the diff image. */
-export function encodePng({ width, height, data }) {
+/** Encode RGBA as a PNG (filter 0): the diff image. `chunks` ([kind, body] pairs) go before IDAT. */
+export function encodePng({ width, height, data }, chunks = []) {
   const raw = Buffer.alloc((width * 4 + 1) * height);
   for (let y = 0; y < height; y++) data.copy(raw, y * (width * 4 + 1) + 1, y * width * 4, (y + 1) * width * 4);
   const chunk = (kind, body) => {
@@ -151,10 +164,22 @@ export function encodePng({ width, height, data }) {
   ihdr.writeUInt32BE(width, 0);
   ihdr.writeUInt32BE(height, 4);
   ihdr.set([8, 6, 0, 0, 0], 8);
-  return Buffer.concat([PNG_SIG, chunk("IHDR", ihdr), chunk("IDAT", deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]);
+  return Buffer.concat([PNG_SIG, chunk("IHDR", ihdr), ...chunks.map(([k, b]) => chunk(k, b)), chunk("IDAT", deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]);
 }
 
 // ---------- pixels ----------
+
+/**
+ * Both screenshots decoded and converted to sRGB, so a Display P3 capture is not compared raw
+ * against an sRGB clone shot. `{ ref, clone, colour }`, or `{ skip }` naming a profile it cannot convert.
+ */
+export function pixelInputs(refBuf, cloneBuf) {
+  const ref = toSrgb(decodePng(refBuf));
+  const clone = toSrgb(decodePng(cloneBuf));
+  const bad = ref.unsupported ?? clone.unsupported;
+  if (bad) return { skip: `unsupported colour profile ${bad} (${ref.unsupported ? "reference" : "clone"} screenshot)` };
+  return { ref: ref.image, clone: clone.image, colour: { ref: ref.profile, clone: clone.profile, converted: ref.converted || clone.converted } };
+}
 
 // pixelmatch's perceptual colour distance (YIQ), alpha blended on white; threshold 0.1 by default.
 const blend = (c, a) => 255 + (c - 255) * a;
@@ -700,7 +725,7 @@ export async function verify({
   };
 
   const { chromium } = pairs.length ? await playwright() : {};
-  const browser = pairs.length ? await chromium.launch() : null;
+  const browser = pairs.length ? await chromium.launch({ args: SRGB_ARGS }) : null;
   const results = [];
   try {
     for (const pair of pairs) {
@@ -755,40 +780,44 @@ export async function verify({
           const buf = await page.screenshot({ fullPage: full, timeout: 20000 });
           writeFileSync(join(out, "clone.png"), buf);
           copyFileSync(shotPath, join(out, "ref.png"));
-          let masks = [];
-          for (const m of forPair(cfg.masks, pair)) {
-            if (m.selector) masks.push(...(await rectsOf(page, m.selector, full)));
-            else masks.push({ x: m.x, y: m.y, width: m.width, height: m.height });
-          }
-          let regions = await landmarks(page, full);
-          for (const r of forPair(cfg.regions, pair)) {
-            if (r.selector) regions.push(...(await rectsOf(page, r.selector, full)).map((x) => ({ ...x, name: r.name ?? r.selector })));
-            else regions.push({ name: r.name, x: r.x, y: r.y, width: r.width, height: r.height });
-          }
-          let refImg = decodePng(readFileSync(shotPath));
-          let cloneImg = decodePng(buf);
-          let crop = null;
-          if (overlay) {
-            const cloneBox = await boxOf(page, scopeCss);
-            crop = unionRect(refStyles?.scopeRect ?? null, cloneBox);
-            if (crop) {
-              regions.unshift({ name: `${cn.kind} "${String(cn.label ?? "").slice(0, 40)}"`, ...(cloneBox ?? crop) });
-              refImg = cropImage(refImg, crop, dpr);
-              cloneImg = cropImage(cloneImg, crop, dpr);
-              masks = shiftRects(masks, crop);
-              regions = shiftRects(regions, crop);
-              writeFileSync(join(out, "ref.crop.png"), encodePng(refImg));
-              writeFileSync(join(out, "clone.crop.png"), encodePng(cloneImg));
+          const px = pixelInputs(readFileSync(shotPath), buf);
+          if (px.skip) skip("pixels", px.skip);
+          else {
+            let masks = [];
+            for (const m of forPair(cfg.masks, pair)) {
+              if (m.selector) masks.push(...(await rectsOf(page, m.selector, full)));
+              else masks.push({ x: m.x, y: m.y, width: m.width, height: m.height });
             }
+            let regions = await landmarks(page, full);
+            for (const r of forPair(cfg.regions, pair)) {
+              if (r.selector) regions.push(...(await rectsOf(page, r.selector, full)).map((x) => ({ ...x, name: r.name ?? r.selector })));
+              else regions.push({ name: r.name, x: r.x, y: r.y, width: r.width, height: r.height });
+            }
+            let refImg = px.ref;
+            let cloneImg = px.clone;
+            let crop = null;
+            if (overlay) {
+              const cloneBox = await boxOf(page, scopeCss);
+              crop = unionRect(refStyles?.scopeRect ?? null, cloneBox);
+              if (crop) {
+                regions.unshift({ name: `${cn.kind} "${String(cn.label ?? "").slice(0, 40)}"`, ...(cloneBox ?? crop) });
+                refImg = cropImage(refImg, crop, dpr);
+                cloneImg = cropImage(cloneImg, crop, dpr);
+                masks = shiftRects(masks, crop);
+                regions = shiftRects(regions, crop);
+                writeFileSync(join(out, "ref.crop.png"), encodePng(refImg));
+                writeFileSync(join(out, "clone.crop.png"), encodePng(cloneImg));
+              }
+            }
+            const d = pixelDiff(refImg, cloneImg, { masks, regions, dpr, threshold: cfg.threshold ?? 0.1 });
+            writeFileSync(join(out, "diff.png"), encodePng(d.image));
+            const max = cfg.maxDiffPixels ?? 0;
+            const { image, ...detail } = d;
+            put("pixels", {
+              ran: true, count: d.differing, status: d.differing > max ? "fail" : "pass",
+              reason: d.differing > max ? `${d.differing} differing pixel(s)${crop ? " in the overlay region" : ""}${d.sizes.ref.join("x") !== d.sizes.clone.join("x") ? ` (size ref ${d.sizes.ref.join("x")}, clone ${d.sizes.clone.join("x")})` : ""}; by region: ${d.regions.slice(0, 6).map((r) => `${r.name} ${r.differing}`).join(", ")}` : null,
+            }, { ...detail, masks, regions, crop, colour: px.colour, viewport: { width, height, dpr }, fullPage: full }, { differing: d.differing, regions: d.regions.slice(0, 10) });
           }
-          const d = pixelDiff(refImg, cloneImg, { masks, regions, dpr, threshold: cfg.threshold ?? 0.1 });
-          writeFileSync(join(out, "diff.png"), encodePng(d.image));
-          const max = cfg.maxDiffPixels ?? 0;
-          const { image, ...detail } = d;
-          put("pixels", {
-            ran: true, count: d.differing, status: d.differing > max ? "fail" : "pass",
-            reason: d.differing > max ? `${d.differing} differing pixel(s)${crop ? " in the overlay region" : ""}${d.sizes.ref.join("x") !== d.sizes.clone.join("x") ? ` (size ref ${d.sizes.ref.join("x")}, clone ${d.sizes.clone.join("x")})` : ""}; by region: ${d.regions.slice(0, 6).map((r) => `${r.name} ${r.differing}`).join(", ")}` : null,
-          }, { ...detail, masks, regions, crop, viewport: { width, height, dpr }, fullPage: full }, { differing: d.differing, regions: d.regions.slice(0, 10) });
         }
 
         // structure and accessibility tree (the overlay's subtree when it is one)

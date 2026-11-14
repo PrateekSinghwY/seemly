@@ -2,7 +2,7 @@ import { chromium } from 'playwright';
 
 const out = { cdp: null, loggedOut: null, err: null };
 try {
-  const b = await chromium.launch();
+  const b = await chromium.launch({ args: ["--force-color-profile=srgb"] });
   const c = await b.newContext({ viewport: { width: 1440, height: 900 } }); // fresh: NO storageState
   const p = await c.newPage();
   const cdp = await c.newCDPSession(p);

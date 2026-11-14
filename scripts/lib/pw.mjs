@@ -14,6 +14,10 @@ export const REPO = process.env.RL_REPO || process.cwd();
 export const DISCOVERY = process.env.SEEMLY_DISCOVERY || join(REPO, "never_to_be_pushed", "discovery");
 export const PROFILE = process.env.SEEMLY_PROFILE || join(DISCOVERY, "pw-profile");
 export const VIEWPORT = { width: 1440, height: 900 };
+// Screenshots in sRGB whatever the display: on a Mac, Chrome otherwise renders and captures in the
+// display's profile (Display P3), and the pixel check would compare P3 samples against sRGB ones.
+// A CDP attach cannot add flags: the window it attaches to must be launched with this flag.
+export const SRGB_ARGS = ["--force-color-profile=srgb"];
 
 let cached;
 export async function playwright() {
@@ -56,13 +60,13 @@ export async function openReference({ cdp, headed = false, viewport = VIEWPORT, 
   if (storageState) {
     // A saved login (cookies copied out of the human's logged-in window): every tool gets its
     // own browser, so several can run at once without sharing one window over CDP.
-    const browser = await chromium.launch({ headless: !headed });
+    const browser = await chromium.launch({ headless: !headed, args: SRGB_ARGS });
     const context = await browser.newContext({ viewport, storageState, serviceWorkers: "block" });
     await grantClipboard(context);
     return { context, close: () => browser.close() };
   }
   if (!existsSync(profile)) console.error(`note: no profile at ${profile}; starting a fresh one (logged out)`);
-  const context = await chromium.launchPersistentContext(profile, { headless: !headed, viewport });
+  const context = await chromium.launchPersistentContext(profile, { headless: !headed, viewport, args: SRGB_ARGS });
   await grantClipboard(context);
   return { context, close: () => context.close() };
 }
@@ -70,7 +74,7 @@ export async function openReference({ cdp, headed = false, viewport = VIEWPORT, 
 /** The clone: a fresh, logged-out context every time, so nothing leaks in from the reference. */
 export async function openClone({ viewport = VIEWPORT } = {}) {
   const { chromium } = await playwright();
-  const browser = await chromium.launch();
+  const browser = await chromium.launch({ args: SRGB_ARGS });
   const context = await browser.newContext({ viewport });
   await grantClipboard(context);
   return { context, close: () => browser.close() };

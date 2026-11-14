@@ -390,7 +390,7 @@ export async function run(plan, outDir, only) {
   const manifest = JSON.parse(readFileSync(join(root, "manifest.json"), "utf8"));
   const byId = new Map(manifest.frames.map((f) => [f.id, f]));
   const { chromium } = await playwright();
-  const browser = await chromium.launch();
+  const browser = await chromium.launch({ args: ["--force-color-profile=srgb"] });
   const ctx = await browser.newContext({ viewport: plan.viewport, deviceScaleFactor: 1 });
   const page = await ctx.newPage();
   const results = [];
@@ -459,7 +459,7 @@ async function selftest() {
   const tmp = mkdtempSync(join(tmpdir(), "frame-diff-"));
   const root = join(tmp, "07_video");
   mkdirSync(join(root, "frames_curated", "v"), { recursive: true });
-  const browser = await chromium.launch();
+  const browser = await chromium.launch({ args: ["--force-color-profile=srgb"] });
   const CHROME = 80;
   // The "frame": the app recorded with a browser chrome band, saved lossy like a video still.
   const rec = await browser.newPage({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 });

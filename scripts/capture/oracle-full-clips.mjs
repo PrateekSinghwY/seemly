@@ -19,7 +19,7 @@ const STAMP = readdirSync(`${ROOT}/raw`).sort().reverse()[0];
 const PAGES = ['home', 'nfl', 'ncaaf', 'nba', 'wnba'];
 const DPR = 2;
 
-const b = await chromium.launch();
+const b = await chromium.launch({ args: ["--force-color-profile=srgb"] });
 const p = await b.newPage({ viewport: { width: 1440, height: 900 } });
 const summary = [];
 

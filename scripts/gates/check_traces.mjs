@@ -28,7 +28,7 @@ const traces = files.flatMap((f) => JSON.parse(readFileSync(f, 'utf8')).traces);
 mkdirSync('never_to_be_pushed/discovery/pixel-reports', { recursive: true });
 const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
 
-const browser = await chromium.launch();
+const browser = await chromium.launch({ args: ["--force-color-profile=srgb"] });
 const page = await (await browser.newContext({ viewport: { width: 1440, height: 900 } })).newPage();
 const names = new Map();
 const collect = (o) => {

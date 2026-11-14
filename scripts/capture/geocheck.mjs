@@ -1,5 +1,5 @@
 import { chromium } from 'playwright';
-const b = await chromium.launch();
+const b = await chromium.launch({ args: ["--force-color-profile=srgb"] });
 const c = await b.newContext({ viewport:{width:1440,height:900} });   // clean: no storageState
 const p = await c.newPage();
 await p.goto('https://www.espn.com/', { waitUntil:'domcontentloaded', timeout:45000 });

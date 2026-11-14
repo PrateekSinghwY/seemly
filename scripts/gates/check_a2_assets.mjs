@@ -40,7 +40,7 @@ for (const line of readFileSync('backend/seed/data/asset.jsonl', 'utf8').split('
   seeded.get(r.page_key).add(norm((r.url_path || '') + (r.query ? '?' + r.query : ''), 'https://seed.invalid/'));
 }
 
-const b = await chromium.launch();
+const b = await chromium.launch({ args: ["--force-color-profile=srgb"] });
 const p = await b.newPage();
 let violations = 0, checkedPages = 0;
 

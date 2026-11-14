@@ -13,6 +13,7 @@ const ctx = await chromium.launchPersistentContext(PROFILE, {
   args: [
     '--window-size=1920,1080',
     '--remote-debugging-port=9222',          // so later steps attach instead of relaunching
+    '--force-color-profile=srgb',            // sRGB screenshots on a P3 display (lib/pw.mjs SRGB_ARGS)
     `--disable-extensions-except=${EXT}`,
     `--load-extension=${EXT}`,
   ],

@@ -481,6 +481,10 @@ For every element on every page, before it is done:
 2. **Style**: the computed-style manifest per property: equal, or a declared ceiling.
 3. **Pixels**: the module's oracle clip vs the same module on the clone, same Chrome
    build, same viewport and DPR, same lock, masks applied: 0 differing pixels.
+   Both sides are compared in sRGB: browsers launch with `--force-color-profile=srgb`
+   (`lib/pw.mjs` `SRGB_ARGS`), and a screenshot tagged Display P3 / ICC / gAMA / cHRM is
+   converted first (`orchestrator/png-color.mjs`); a profile it cannot convert skips the check
+   as "unsupported colour profile <desc>", never a pass.
 
 4. **Widths**: the width sweep (`scripts/qa/width_sweep.mjs`, 1024 to 2560 plus N-1 / N / N+1
    at breakpoints) and the structural label audit (`scripts/qa/struct_audit.mjs`): no invented

@@ -50,7 +50,7 @@ try {
   }));
   if (!await waitFor(`http://127.0.0.1:${web}/`)) throw new Error(`frontend did not start on ${web}`);
 
-  browser = await chromium.launch();
+  browser = await chromium.launch({ args: ["--force-color-profile=srgb"] });
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   await page.goto(`http://127.0.0.1:${web}/`, { waitUntil: "networkidle", timeout: 60000 });
   await page.waitForTimeout(2500);

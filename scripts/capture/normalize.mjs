@@ -18,7 +18,7 @@ const PAGES = [
   ['wnba','/wnba/',              'wnba'],
 ];
 
-const b = await chromium.launch();
+const b = await chromium.launch({ args: ["--force-color-profile=srgb"] });
 const ctx = await b.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
 const page = await ctx.newPage();
 

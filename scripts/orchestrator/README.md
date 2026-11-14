@@ -142,7 +142,7 @@ and runs:
 
 | check | how | fails on |
 |---|---|---|
-| `pixels` | the saved reference screenshot vs a clone screenshot at the same width, height, DPR and full-page mode; `masks.json` rects or selectors masked on both; built-in PNG codec and pixelmatch's YIQ distance (the repo has no pixelmatch). An overlay: both cropped to the union of its two boxes | any unmasked differing pixel (or `maxDiffPixels`); counts per landmark and named region, plus `diff.png` |
+| `pixels` | the saved reference screenshot vs a clone screenshot at the same width, height, DPR and full-page mode; `masks.json` rects or selectors masked on both; built-in PNG codec and pixelmatch's YIQ distance (the repo has no pixelmatch); both shots converted to sRGB first from an embedded ICC profile (Display P3 or any RGB matrix/TRC profile) or gAMA/cHRM (`png-color.mjs`), and browsers launched with `--force-color-profile=srgb`. An overlay: both cropped to the union of its two boxes | any unmasked differing pixel (or `maxDiffPixels`); counts per landmark and named region, plus `diff.png`; a colour profile it cannot convert is skipped "unsupported colour profile <desc>" |
 | `structure` | the saved `aria.yml` vs the clone's AX snapshot of the same scope: structural roles, names (digits as `#`), states, order; table rows are data. Plus the saved Tab order (`focus.json`) vs the clone's | a missing or invented entry, or a reordering; a focus stop that differs |
 | `style` | the saved `styles.json` (`page-probe.mjs` `styleManifest`) vs the clone's, elements matched by role, name (digits as `#`) and nth; font family, size, weight, line height, colour, background, border width/style/colour, radius, padding, margin, width, height, gap, box shadow | a property beyond its `--styles-allow` ceiling (default equal); no `styles.json` is skipped "ref style not captured" |
 | `human_eye` | `../qa/human_eye_lib.mjs` (what `human_eye.mjs` runs) on the reached node, scoped to an overlay; `--dead-controls` clicks every enabled control from a fresh reach in a context that aborts writes | any finding; any dead enabled control |
@@ -255,3 +255,5 @@ const n = g.next();            // ...worker expands it...
 g.setStatus(n.id, "closed");
 save(g, "never_to_be_pushed/discovery");
 ```
+
+| `png-color.mjs` | reads PNG colour chunks (iCCP, sRGB, gAMA, cHRM) and converts tagged screenshots to sRGB before the pixel diff; an unconvertible profile makes the pixel check "skipped", never passed |
