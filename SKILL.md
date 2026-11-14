@@ -97,6 +97,24 @@ trips, while no pixel, structure, accessibility or network diff had run on any o
 The skill had every script needed; the agent skipped them because they were slower. That is the
 failure this gate removes.
 
+## 0.45 A weak link stops the run: fix the skill first, then resume
+
+Any defect found in the skill itself stops the build at the next atomic step. That covers a walker
+that mislabels an edge, a request classed wrong, gap nodes left behind, a missing check, or a count
+that does not mean what it says. Then:
+1. **Record it:** one row in `LESSONS.md` and `discovery/NOTES.md` saying what it is and how it was
+   seen.
+2. **Fix it in the tracked skill:** code plus a test that fails without the fix (an orchestrator test
+   or an eval case).
+3. **Push it** to the skill repo's `main`.
+4. **Redo everything the defect touched** before the build continues: re-walk the affected nodes,
+   re-run the checks.
+
+Never build on a known weak link, and never list one as a caveat and carry on. Reporting a weak link
+to the human without having fixed it is the failure this rule exists for. That happened on
+2026-11-14, when overlay misattribution, reads classed as writes, and 118 unwalked gap nodes were
+found after the build had used that graph.
+
 ## 0.5 Intake
 
 The human's message follows `INTAKE.md`. Two forms:
