@@ -17,6 +17,14 @@
 //            one list overlay two buttons fill with different rows (Team A / Team B)
 //   /spa/    a hash-routed app (/spa/app#/list/Kiosk, #/list/Categories, #/item/N), a page whose
 //            plain fragments (#one, #two) rebuild it, and a deep admin area out of scope
+//   /pick/   a timeframe picker (listbox) whose "... Pay Period" choices only re-read a grid, a
+//            money-worded choice in it that also only reads, a "Pay now" button that writes, and
+//            a "Show summary" button that fires a pendo-like analytics beacon
+//   /ld/     pages whose content needs POSTs sent while they load (`/ld/x/action-config`,
+//            `/ld/banners/post`, `/ld/session-context`), one load write that must stay aborted,
+//            and a page that renders nothing without its load write (`/ld/broken`)
+//   /out/    a link to /out/forecast, which redirects to /out/forecast#/logout and ends the
+//            session; every /out/ page after it redirects to /login
 
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
@@ -113,6 +121,38 @@ body{font-family:sans-serif;margin:0}.overlay{position:fixed;z-index:50;inset:15
 ${hubScript("sticky-panel", '<div class="overlay" role="dialog" aria-label="Pinned"><h2>Pinned</h2><p>Stays open</p></div>')}</body></html>`;
 
 const plain = (title, body) => `<!doctype html><html><head><title>${title}</title></head><body><main>${body}</main></body></html>`;
+
+const pickHome = plain("Timecards", `<h1>Timecards</h1>
+<div style="position:relative"><button id="tf" aria-haspopup="listbox" aria-expanded="false" onclick="openTf()">Timeframe</button>
+<div id="lb" role="listbox" aria-label="Timeframe" style="position:absolute;z-index:30;background:#fff;border:1px solid #999;width:220px" hidden>
+<div role="option" tabindex="-1" onclick="pick('previous')">Previous Pay Period</div>
+<div role="option" tabindex="-1" onclick="pick('current')">Current Pay Period</div>
+<div role="option" tabindex="-1" onclick="pick('next')">Next Pay Period</div>
+<div role="option" tabindex="-1" onclick="pick('extra')">Buy more hours</div>
+</div></div>
+<button onclick="fetch('/pick/api/payments',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({amount:40})}).catch(()=>{})">Pay now</button>
+<button onclick="fetch('https://data.pendo.io/data/ptm.gif',{method:'POST',mode:'no-cors',body:'evt=click'}).catch(()=>{});document.getElementById('sum').hidden=!document.getElementById('sum').hidden">Show summary</button>
+<section id="sum" hidden><h2>Summary</h2><table><tr><td>Hours</td><td>38</td></tr><tr><td>Exceptions</td><td>2</td></tr></table><ul><li>a</li><li>b</li></ul></section>
+<div id="grid"></div>
+<script>
+function openTf(){lb.hidden=false;tf.setAttribute('aria-expanded','true')}
+document.addEventListener('keydown',(e)=>{if(e.key==='Escape'){lb.hidden=true;tf.setAttribute('aria-expanded','false')}});
+async function pick(span){
+  lb.hidden=true;tf.setAttribute('aria-expanded','false');
+  const r=await fetch('/pick/api/timecards/multi_read',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({timeframe:span})}).then((x)=>x.json()).catch(()=>null);
+  if(r) grid.innerHTML='<table>'+r.rows.map((x)=>'<tr><td>'+x+'</td></tr>').join('')+'</table>';
+}
+</script>`);
+
+/** A page that draws itself from POSTs sent while it loads; `needs` decides what it renders. */
+const ldPage = (title, posts, body) => plain(title, `<h1>${title}</h1><div id="c"></div><script>
+const post = (u) => fetch(u, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+Promise.all(${JSON.stringify(posts)}.map(post)).then((rs) => { if (rs[0]) c.innerHTML = ${JSON.stringify(body)}; });
+</script>`);
+const ldHome = ldPage("Load home", ["/ld/x/action-config", "/ld/banners/post", "/ld/session-context", "/ld/api/visits/update"], `<p>Banner</p><nav><a href="/ld/broken">Broken</a></nav><button onclick="location.href='/ld/detail'">Open detail</button>`);
+const ldDetail = ldPage("Load detail", ["/ld/session-context", "/ld/api/visits/update"], `<p>Detail</p><button onclick="this.textContent='Reloaded'">Reload</button>`);
+const ldBroken = ldPage("Load broken", ["/ld/api/session/update"], `<p>Shown only after a write</p><button>Act</button>`);
+const outHome = plain("Out", `<h1>Out</h1><nav><a href="/out/team">Team</a> <a href="/out/forecast">Forecast</a> <a href="/out/reports">Reports</a></nav>`);
 const flakyHome = plain("Flaky", `<h1>Flaky</h1><nav><a href="/flaky/reports">Reports</a> <a href="/flaky/down">Down</a></nav>`);
 const sessHome = plain("Session", `<h1>Session</h1><button onclick="fetch('/sess/api/expire')">Expire session</button> <a href="/sess/team">Team</a>`);
 const login = plain("Sign in", `<h1>Sign in</h1><form><label>User <input name="u"></label><label>Password <input type="password" name="p"></label><button type="button">Sign in</button></form>`);
@@ -247,7 +287,7 @@ export function acceptWs(req, socket, onText) {
 }
 
 export function start() {
-  const hits = { logout: 0, writes: [], ws: [], flaky: 0, loggedOut: false, expired: false, admin: [] };
+  const hits = { logout: 0, writes: [], ws: [], flaky: 0, loggedOut: false, expired: false, admin: [], forecast: 0, outLoggedOut: false };
   const server = createServer((req, res) => {
     const url = new URL(req.url, "http://x");
     if (req.method !== "GET") hits.writes.push(`${req.method} ${url.pathname}`);
@@ -286,6 +326,31 @@ export function start() {
       if (req.method === "POST") return json({ ok: true });
     }
     if (url.pathname === "/conf/") return html(confHome);
+    if (url.pathname.startsWith("/pick/")) {
+      if (url.pathname === "/pick/") return html(pickHome);
+      if (url.pathname === "/pick/api/timecards/multi_read") return json({ rows: ["Mon 8.0", "Tue 7.5", "Wed 8.0"] });
+      if (req.method === "POST") return json({ ok: true });
+    }
+    if (url.pathname.startsWith("/ld/")) {
+      if (url.pathname === "/ld/") return html(ldHome);
+      if (url.pathname === "/ld/detail") return html(ldDetail);
+      if (url.pathname === "/ld/broken") return html(ldBroken);
+      if (req.method === "POST") return json({ ok: true });
+    }
+    if (url.pathname.startsWith("/out/")) {
+      if (url.pathname === "/out/forecast") {
+        hits.forecast++;
+        hits.outLoggedOut = true;
+        return html(plain("Forecast", `<h1>Forecast</h1><script>location.replace(location.pathname + "#/logout")</script>`));
+      }
+      if (hits.outLoggedOut) {
+        res.writeHead(302, { location: `/login?next=${encodeURIComponent(url.pathname)}` });
+        return res.end();
+      }
+      if (url.pathname === "/out/") return html(outHome);
+      if (url.pathname === "/out/team") return html(plain("Team", "<h1>Team</h1><p>Members</p>"));
+      if (url.pathname === "/out/reports") return html(plain("Reports", "<h1>Reports</h1><table><tr><td>Hours</td></tr></table>"));
+    }
     if (url.pathname.startsWith("/spa/")) {
       if (url.pathname === "/spa/") return html(plain("Spa", `<h1>Spa</h1><nav><a href="/spa/app">App</a> <a href="/spa/admin">Admin</a></nav>`));
       if (url.pathname === "/spa/app") return html(spaApp(4));

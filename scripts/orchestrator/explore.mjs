@@ -4,8 +4,10 @@
 // run resumes from graph.json with nothing lost or repeated.
 //
 // Safety is in safety.mjs: names that end the session are never clicked, money/messaging/
-// deletion names are queued for BLOCKED, and every non-read request (HTTP or websocket call) is
-// aborted in the browser.
+// deletion names are queued for BLOCKED, every non-read request (HTTP or websocket call) is
+// aborted in the browser (POSTs a page sends while loading are reads unless clearly named
+// writes), analytics beacons are dropped, and a route that signed the session out is put in
+// never-open.jsonl and never opened again.
 //
 // Four invariants this file keeps, each with a test in test/walker.test.mjs:
 //   - an element fires only from its node's verified pre-state, and what it opened is read
@@ -28,7 +30,8 @@ import { KEYED_KINDS, scopeByRules } from "./graph.mjs";
 import { INTERACTION_UNFIRED, LISTENER_HOOK, focusOrder, interactionInvariant, locateFor, perform, readShortcuts, replayEdge, runInteractions } from "./interactions.mjs";
 import { DEFAULT_WIDTHS, readLabels } from "../qa/labels.mjs";
 import { FLOATING_SEL, clearMarks, markFloating, newOverlays, openFloating, openOnLoad, probe, sessionState, styleManifest } from "./page-probe.mjs";
-import { RequestClassifier, classify, classifyFrame, pairFrames, parseFrame } from "./safety.mjs";
+import { NeverOpen, RequestClassifier, classify, classifyFrame, pairFrames, parseFrame, sessionEndingUrl } from "./safety.mjs";
+import { TRANSIENT_ERR, failureReason, markGap } from "./gaps.mjs";
 import { save } from "./store.mjs";
 
 /** Below this skeleton similarity, a click that kept the URL made a new state. */
@@ -46,6 +49,20 @@ export const RETRIES = 3;
 export const BACKOFF_MS = 1500;
 
 export class SessionLost extends Error {}
+/**
+ * A navigation that signed the session out (it landed on a logout-like URL). `target` is the URL
+ * that was opened; it is in never-open.jsonl before this is thrown. A SessionLost, so the run
+ * exits 3 for a new login.
+ */
+export class SessionEnding extends SessionLost {
+  constructor(message, { target, landed }) {
+    super(message);
+    this.target = target;
+    this.landed = landed;
+  }
+}
+/** A navigation refused before it left: its URL is in never-open.jsonl. */
+export class NeverOpenError extends Error {}
 /** A navigation that kept failing transiently after every retry. */
 export class TransientError extends Error {}
 /** A node whose elements are not all accounted for: it must not close. */
@@ -54,13 +71,12 @@ export class InvariantError extends Error {}
 /** Sign-in pages and identity hosts. `--login-pattern` overrides it for an unusual login URL. */
 export const LOGIN_URL = /(^https?:\/\/(login|auth|sso|idp|signin|accounts)[.-])|\/(login|log-in|signin|sign-in|sign_in|logon|authn?|sso|saml2?|oauth2?|openid|adfs|cas|idp)(\/|\?|#|\.|$)/i;
 const SIGN_IN_NAME = /\b(sign|log)\s*-?\s*in\b/i;
-const TRANSIENT_ERR = /Timeout \d+ms exceeded|timed out|ERR_ABORTED|ERR_TIMED_OUT|ERR_EMPTY_RESPONSE|ERR_CONNECTION_REFUSED|ERR_CONNECTION_CLOSED|ERR_HTTP2|ERR_SSL_PROTOCOL|HTTP (5\d\d|429|408)\b|serviceUnavailable|service unavailable/i;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---------- what every element ends as ----------
 
 /** Fired, and opened something: the outcome carries `children`, one edge each. */
-export const EDGE_OUTCOMES = new Set(["navigation", "page", "known", "out-of-scope", "redirect-out", "bounded", "popup", "overlay", "hover-overlay", "state", "unreachable"]);
+export const EDGE_OUTCOMES = new Set(["navigation", "page", "known", "out-of-scope", "redirect-out", "bounded", "popup", "overlay", "hover-overlay", "state", "unreachable", "session-ending"]);
 /** Fired, and the result is recorded without an edge. */
 export const FIRED_OUTCOMES = new Set(["inert", "write-attempt"]);
 const FIRED_PREFIX = /^(native-dialog|download): /;
@@ -101,61 +117,8 @@ export function nodeInvariant(candidates, outcomes) {
 const unfired = (row, reason, extra = {}) => ({ ...row, ...extra, outcome: reason, unfired: reason });
 const isUnfired = (res) => res.unfired !== undefined;
 
-// ---------- gaps: why a node was given up on ----------
-
-/**
- * A machine-readable reason for an explore failure: `{ code, retryable }`. Retryable gaps are
- * what `requeue --gaps` puts back on the frontier.
- */
-export function failureReason(message = "") {
-  const m = String(message);
-  if (/^HTTP 40[13]\b/.test(m)) return { code: "http-auth", retryable: true };
-  if (/^HTTP 4\d\d\b/.test(m)) return { code: "http-4xx", retryable: false };
-  if (TRANSIENT_ERR.test(m) && !/^replay:|locator\./.test(m)) return { code: "transient", retryable: true };
-  if (/^replay: .* not found/.test(m)) return { code: "replay-not-found", retryable: true };
-  if (/locator\.\w+: Timeout/.test(m)) return { code: "replay-timeout", retryable: true };
-  if (/^invariant:/.test(m)) return { code: "invariant", retryable: true };
-  if (/unreachable without a write/.test(m)) return { code: "write-only", retryable: false };
-  return { code: "error", retryable: true };
-}
-
-/** Record `id` as a gap with its reason, on the node (`gapReason`) and in its status detail. */
-export function markGap(g, id, reason, message) {
-  const n = g.node(id);
-  n.gapReason = { ...reason, message: String(message ?? "").split("\n")[0].slice(0, 300), at: new Date().toISOString() };
-  g.setStatus(id, "gap", `explore failed (${reason.code}): ${n.gapReason.message}`);
-}
-
-/**
- * The reason of any gap node, including ones written before reasons existed (an out-of-scope
- * node, a legacy "explore failed twice: ..." detail, a person's `gap --reason`).
- */
-export function gapReason(n) {
-  if (n.status !== "gap") return null;
-  if (n.gapReason) return n.gapReason;
-  if (n.signature?.[0] === "out-of-scope") return { code: "out-of-scope", retryable: false, message: n.url };
-  const d = n.detail ?? "";
-  const m = d.match(/^explore failed[^:]*: (.*)$/s);
-  if (m) return { ...failureReason(m[1]), message: m[1] };
-  return { code: "manual", retryable: false, message: d };
-}
-
-/** Gap nodes whose reason is retryable: what `requeue --gaps` puts back. */
-export function retryableGaps(g) {
-  return Object.values(g.data.nodes).filter((n) => gapReason(n)?.retryable).map((n) => n.id);
-}
-
-/** Put every retryable gap back on the frontier with its attempts reset. Returns the ids. */
-export function requeueGaps(g) {
-  const ids = retryableGaps(g);
-  for (const id of ids) {
-    const n = g.node(id);
-    n.attempts = 0;
-    delete n.gapReason;
-    g.setStatus(id, "frontier", null);
-  }
-  return ids;
-}
+// Gap reasons, `requeue --gaps`, `requeue --risky`: gaps.mjs (re-exported here for callers).
+export { failureReason, gapReason, markGap, requeueGaps, requeueRisky, requeueWriteOnly, retryableGaps } from "./gaps.mjs";
 
 /** The browser itself went away (a stop signal, a crash): not the node's fault, end the run. */
 const BROWSER_GONE = /Target page, context or browser has been closed|Browser has been closed|browser has disconnected|Target crashed/i;
@@ -168,7 +131,7 @@ const DISMISS = /^(close|dismiss|skip( tour)?|got it|no,? thanks|not now|maybe l
  * Close whatever opened on load, reading each overlay first. Escape, then the overlay's own
  * dismiss control. Returns what was open, with its skeleton, so the caller can record it.
  */
-export async function dismissOnLoad(p) {
+export async function dismissOnLoad(p, { onAct = null } = {}) {
   const seen = [];
   for (let round = 0; round < 3; round++) {
     const [ov] = await p.evaluate(openOnLoad);
@@ -177,6 +140,7 @@ export async function dismissOnLoad(p) {
     ov.signature = read.signature;
     ov.contentKey = read.contentKey;
     seen.push(ov);
+    onAct?.();
     await p.keyboard.press("Escape");
     await p.waitForTimeout(300);
     if ((await p.locator(`css=${ov.css}`).count()) && (await p.locator(`css=${ov.css}`).isVisible().catch(() => false))) {
@@ -236,13 +200,27 @@ export async function explore(g, dir, opts = {}) {
   // Read POSTs: one classifier for "may this request leave the browser" and "is this edge a
   // write". Learned rules are logged to allowed-posts.jsonl and reloaded on the next run.
   const allowedPath = join(dir, "allowed-posts.jsonl");
-  const reqs = new RequestClassifier({ allowPost, readPosts, onLearn: (row) => appendFileSync(allowedPath, JSON.stringify({ ...row, node: current.node, element: current.element }) + "\n") });
+  const reqs = new RequestClassifier({ allowPost, readPosts, origin: g.data.meta.origin ?? null, onLearn: (row) => appendFileSync(allowedPath, JSON.stringify({ ...row, node: current.node, element: current.element }) + "\n") });
   if (existsSync(allowedPath)) reqs.load(readFileSync(allowedPath, "utf8").split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }));
 
   const { context, close } = await openReference(opts);
   // Which elements listen for a right-click, a double-click, a drag or keys (interactions.mjs).
   await context.addInitScript({ content: LISTENER_HOOK });
-  const net = { blocked: [], reads: 0, popups: [], dialogs: [], downloads: [], bodies: null, ws: null, failures: [] };
+  const net = { blocked: [], reads: 0, popups: [], dialogs: [], downloads: [], bodies: null, ws: null, failures: [], refused: [] };
+  // URLs no walk may open again (they signed the session out once): refused before every navigation.
+  const never = new NeverOpen(join(dir, "never-open.jsonl"));
+  // Per page: "load" from a document load until the walker acts on it (a click, a key, a hover,
+  // a dismiss), then "action". A POST sent at load is a read unless its name is a clear write
+  // (safety.mjs). Only a document request starts a load: a hash or pushState change inside a
+  // click stays "action", so a click that routes and writes at once is still aborted. `navs`
+  // lists the main-frame URLs since the last act, so a redirect through a logout route is seen.
+  const phase = new WeakMap();
+  const navs = new WeakMap();
+  const acting = (p) => {
+    phase.set(p, "action");
+    navs.set(p, []);
+  };
+  const addNav = (p, url) => navs.set(p, [...(navs.get(p) ?? []), url]);
   // Broken flows: an API answer >= 400 or an uncaught script error, tied to the node and the
   // click that caused it, in errors.jsonl. A walk that only records what opened misses a save
   // that 500s behind a toast.
@@ -256,17 +234,31 @@ export async function explore(g, dir, opts = {}) {
   };
   await context.route("**/*", (route) => {
     const req = route.request();
-    const v = reqs.classify({ method: req.method(), url: req.url(), postData: req.postData() });
-    if (v.verdict === "write") {
-      net.blocked.push({ method: req.method(), url: req.url(), body: (req.postData() ?? "").slice(0, 2000), why: v.why });
+    let from = null;
+    try {
+      from = req.frame().page();
+    } catch {}
+    if (req.isNavigationRequest() && never.match(req.url())) {
+      net.refused.push(req.url());
       return route.abort("blockedbyclient");
+    }
+    const ph = (from && phase.get(from)) ?? "action";
+    const v = reqs.classify({ method: req.method(), url: req.url(), postData: req.postData(), phase: ph });
+    if (v.verdict === "write") {
+      net.blocked.push({ method: req.method(), url: req.url(), body: (req.postData() ?? "").slice(0, 2000), why: v.why, phase: ph });
+      return route.abort("blockedbyclient");
+    }
+    // A document load that may go ahead: what the page sends from now until the next act is load.
+    if (from && req.isNavigationRequest() && req.frame() === from.mainFrame()) {
+      phase.set(from, "load");
+      addNav(from, req.url());
     }
     // Analytics beacons: not sent (they record the walk as usage), not a write either.
     if (v.verdict === "telemetry") return route.abort("blockedbyclient");
     // A non-read method let through as a read: logged, so a person can confirm each one is.
     if (!["GET", "HEAD", "OPTIONS"].includes(req.method().toUpperCase())) {
       net.reads++;
-      appendFileSync(allowedPath, JSON.stringify({ method: req.method(), url: req.url(), why: v.why, node: current.node, element: current.element }) + "\n");
+      appendFileSync(allowedPath, JSON.stringify({ method: req.method(), url: req.url(), why: v.why, phase: ph, node: current.node, element: current.element }) + "\n");
     }
     return route.fallback();
   });
@@ -300,6 +292,10 @@ export async function explore(g, dir, opts = {}) {
   const page = context.pages()[0] ?? (await context.newPage());
   const side = await context.newPage();
   for (const p of [page, side]) {
+    phase.set(p, "load");
+    p.on("framenavigated", (f) => {
+      if (f === p.mainFrame()) addNav(p, f.url());
+    });
     p.on("dialog", (d) => {
       net.dialogs.push(d.message());
       d.dismiss().catch(() => {});
@@ -353,12 +349,52 @@ export async function explore(g, dir, opts = {}) {
    * "transient" for an error page worth retrying.
    */
   async function checkPage(p, { requested = null, byName = "" } = {}) {
+    // A navigation that landed on (or passed through) a logout-like URL signed the session out:
+    // the URL that was opened goes into never-open.jsonl and the run stops for a new login.
+    const chain = [...(navs.get(p) ?? []), p.url()].filter((u) => u && u !== "about:blank");
+    const ending = chain.find(sessionEndingUrl);
+    if (ending && !(requested && sessionEndingUrl(requested))) {
+      const target = requested ?? chain.find((u) => !sessionEndingUrl(u)) ?? ending;
+      throw sessionEnding(target, ending, "the navigation landed on a session-ending URL");
+    }
     const st = await p.evaluate(sessionState, { loginSrc: loginRe.source }).catch(() => null);
     if (!st) return null;
     if (st.transient) return { transient: true, login: st.login, why: st.why, href: st.href };
     const askedForLogin = (requested && loginRe.test(requested)) || SIGN_IN_NAME.test(byName);
-    if ((st.login || st.ended) && !askedForLogin) throw new SessionLost(`${st.why} at ${st.href}`);
+    if ((st.login || st.ended) && !askedForLogin) {
+      // One hop to the sign-in page from a URL that was opened: session-ending when the login is
+      // still alive elsewhere (the URL itself throws the session out); else the login is simply
+      // gone and nothing can be blamed.
+      const target = requested ?? chain.find((u) => !loginRe.test(u)) ?? null;
+      if (st.login && target && (await sessionAlive())) throw sessionEnding(target, st.href, "the navigation led to the sign-in page while the session was alive", { alive: true });
+      throw new SessionLost(`${st.why} at ${st.href}`);
+    }
     return null;
+  }
+
+  /** Record `target` as never-open and build the error to throw (`alive`: the login survived). */
+  function sessionEnding(target, landed, why, { alive = false } = {}) {
+    never.add(target, { landed, why, node: current.node, element: current.element });
+    const e = new SessionEnding(`session-ending: opening ${target} ${alive ? "led to" : "landed on"} ${landed}`, { target, landed });
+    e.alive = alive;
+    return e;
+  }
+
+  /** Is the login still good? An entry page read in a fresh tab, never the walker's own. */
+  async function sessionAlive() {
+    const entry = Object.values(g.data.nodes).find((n) => n.entry);
+    if (!entry) return false;
+    const t = await context.newPage();
+    try {
+      await t.goto(entry.href ?? entry.url, { waitUntil: "domcontentloaded", timeout: 30000 });
+      await settle(t);
+      const st = await t.evaluate(sessionState, { loginSrc: loginRe.source }).catch(() => null);
+      return !!st && !st.login && !st.ended && !st.transient;
+    } catch {
+      return false;
+    } finally {
+      await t.close().catch(() => {});
+    }
   }
 
   /**
@@ -367,12 +403,14 @@ export async function explore(g, dir, opts = {}) {
    * page is already on that URL (a hash route would otherwise not reload). Returns the response.
    */
   async function load(p, url, { fresh = false } = {}) {
+    if (never.match(url)) throw new NeverOpenError(`never-open: ${url} matches never-open.jsonl (it signed the session out once)`);
     let last = "";
     let onLogin = false;
     for (let i = 0; i <= retries; i++) {
       if (i) await sleep(backoffMs * 2 ** (i - 1));
       try {
         if (fresh || i) await p.goto("about:blank").catch(() => {});
+        navs.set(p, []);
         const resp = await p.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
         await settle(p);
         const status = resp?.status() ?? 0;
@@ -414,6 +452,7 @@ export async function explore(g, dir, opts = {}) {
 
   async function fire(el, kind) {
     if (kind === "redirect") return; // it happened on its own when the page loaded
+    acting(page);
     await replayEdge(page, { kind, element: el }, locate);
     await settle(page, 2500);
     await checkPage(page, { byName: el.name ?? "" });
@@ -441,7 +480,7 @@ export async function explore(g, dir, opts = {}) {
     if (resp && resp.status() >= 400) throw new Error(`HTTP ${resp.status()} on ${start.href ?? start.url}`);
     if (!inScope(page.url(), scope)) throw new SessionLost(`landed on ${page.url()} (login lost or redirected out of scope)`);
     if (n.state?.startsWith("on-load:") && rest.length <= 1) return { scopeCss: n.info?.scope ?? null };
-    recordOnLoad(start, await dismissOnLoad(page));
+    recordOnLoad(start, await dismissOnLoad(page, { onAct: () => acting(page) }));
     let scopeCss = null;
     for (let i = 0; i < rest.length; i++) {
       const last = i === rest.length - 1;
@@ -547,9 +586,40 @@ export async function explore(g, dir, opts = {}) {
     return admit(g.data.meta.bounds, url, stateBound, { anyHash: !!g.data.meta.hashRoutes });
   }
 
+  /**
+   * A URL that signed the session out (or is in never-open.jsonl): every node at it becomes a gap
+   * `session-ending`, every edge into it a `session-ending` edge (never replayed), and the opener
+   * gets one too. Returns the node that stands for it.
+   */
+  function endingNode(url, why, opener = null) {
+    const at = g.nodesAt(url);
+    const node = at[0] ?? g.addNode({ url, signature: ["session-ending"], inScope: inScope(url, scope), label: `${new URL(url).pathname} (session-ending)` }).node;
+    const ids = new Set(at.length ? at.map((m) => m.id) : [node.id]);
+    for (const id of ids) if (g.node(id).status !== "gap" || g.node(id).gapReason?.code !== "session-ending") markGap(g, id, { code: "session-ending", retryable: false }, why);
+    for (const e of Object.values(g.data.edges)) {
+      if (!ids.has(e.to) || e.kind === "session-ending") continue;
+      g.removeEdge(e.id);
+      g.addEdge({ from: e.from, to: e.to, kind: "session-ending", element: e.element });
+    }
+    g.data.meta.links[g.canon(url)] = node.id;
+    if (opener) g.addEdge({ from: opener.from, to: node.id, kind: "session-ending", element: opener.element });
+    return node;
+  }
+
+  /** Record a SessionEnding thrown while firing `c` on `n`: an edge row, or a rethrow when the login is gone. */
+  function ended(n, c, e) {
+    const element = { role: c.role, name: c.name, css: c.css, nth: c.nth };
+    const node = endingNode(e.target, `${e.message}`, { from: n.id, element });
+    if (!e.alive) throw e;
+    return { outcome: "session-ending", children: [node.id], landed: e.landed };
+  }
+
   async function readLink(n, c) {
     const href = g.canon(c.href);
     const element = { role: c.role, name: c.name, css: c.css, nth: c.nth, href };
+    // Never opened again once it signed the session out: the edge says so, nothing is loaded.
+    const barred = never.match(c.href) ?? never.match(href);
+    if (barred) return { node: endingNode(c.href, `never-open: ${barred.pattern}`), kind: "session-ending", element, outcome: "session-ending" };
     const known = g.data.meta.links[href];
     if (known && g.data.nodes[known]) return { node: g.data.nodes[known], kind: "navigation", element, outcome: "known" };
     if (!inScope(href, scope)) {
@@ -572,7 +642,7 @@ export async function explore(g, dir, opts = {}) {
       if (isNew || node.status === "frontier") markGap(g, node.id, { code: "transient", retryable: true }, e.message);
       return { node, kind: "navigation", element, outcome: "unreachable" };
     }
-    const onLoad = await dismissOnLoad(side);
+    const onLoad = await dismissOnLoad(side, { onAct: () => acting(side) });
     const final = side.url();
     if (!inScope(final, scope)) {
       const { node } = outNode(final, `${c.name || final} (redirects out of scope)`);
@@ -591,7 +661,8 @@ export async function explore(g, dir, opts = {}) {
     await page.evaluate(markFloating, FLOATING_SEL);
     current = { node: n.id, element: `${c.role} "${String(c.name ?? "").slice(0, 60)}"` };
     g.signal("walker.at", { node: n.id, element: current.element });
-    return { blocked: net.blocked.length, reads: net.reads, popups: net.popups.length, dialogs: net.dialogs.length, downloads: net.downloads.length, failures: net.failures.length };
+    acting(page);
+    return { blocked: net.blocked.length, reads: net.reads, popups: net.popups.length, dialogs: net.dialogs.length, downloads: net.downloads.length, failures: net.failures.length, refused: net.refused.length };
   }
 
   /**
@@ -611,10 +682,20 @@ export async function explore(g, dir, opts = {}) {
           if (e.to !== node.id && e.kind === k && e.element?.name === element.name && (e.element?.nth ?? 0) === (element.nth ?? 0) && t.kind === node.kind && t.template === node.template && t.contentKey && t.contentKey !== node.contentKey) g.removeEdge(e.id);
         }
       }
-      g.addEdge({ from: n.id, to: node.id, kind: k, element, request, via: k === "write" && kind !== "click" ? kind : undefined });
+      const { edge } = g.addEdge({ from: n.id, to: node.id, kind: k, element, request, via: k === "write" && kind !== "click" ? kind : undefined });
+      if (out.loadAborted) edge.loadAborted = out.loadAborted;
       out.children.push(node.id);
     };
-    const blocked = net.blocked.slice(mark.blocked);
+    // A write the opened page sent while loading is aborted and queued, but it is the page's, not
+    // this act's: the edge stays what the act was, so the page is reached by replay.
+    const sent = net.blocked.slice(mark.blocked);
+    const blocked = sent.filter((b) => b.phase !== "load");
+    const atLoad = sent.filter((b) => b.phase === "load");
+    if (atLoad.length) {
+      pending(n, c, `the page this ${kind} opened sent a write while loading; it was aborted`, atLoad, "write");
+      out.loadAborted = atLoad.map((b) => `${b.method} ${b.url}`);
+    }
+    const refused = net.refused.slice(mark.refused ?? net.refused.length);
     const reads = net.reads - mark.reads;
     const popups = net.popups.slice(mark.popups);
     const dialogs = net.dialogs.slice(mark.dialogs);
@@ -632,7 +713,11 @@ export async function explore(g, dir, opts = {}) {
       if (similarity(before, await sigOf()) < SAME_STATE) g.data.meta.hashRoutes = true;
     }
 
-    if (popups.length) {
+    if (refused.length) {
+      // It tried to open a never-open URL; the navigation was refused before it left.
+      link("session-ending", endingNode(refused[0], `never-open: ${never.match(refused[0])?.pattern ?? refused[0]}`));
+      out.outcome = "session-ending";
+    } else if (popups.length) {
       for (const url of popups) {
         const r = await readLink(n, { ...c, href: url });
         link("navigation", r.node);
@@ -717,6 +802,7 @@ export async function explore(g, dir, opts = {}) {
     const rawBefore = page.url();
 
     if (c.haspopup || c.inNav) {
+      acting(page);
       await page.evaluate(markFloating, FLOATING_SEL);
       await loc.hover({ timeout: 3000 }).catch(() => {});
       await page.waitForTimeout(350);
@@ -832,9 +918,20 @@ export async function explore(g, dir, opts = {}) {
     net.ws = [];
     current = { node: n.id, element: "(load)" };
     g.signal("walker.at", { node: n.id, element: "(load)" });
+    const loadMark = { blocked: net.blocked.length, failures: net.failures.length };
     const { scopeCss: fresh } = await reach(n);
     const scopeCss = fresh ?? n.info?.scope ?? null;
     const r = await page.evaluate(probe, { scopeCss });
+    // Writes the page sent while loading were aborted. Queued like any write; and when the page
+    // then shows nothing to fire or broke, the node is a retryable `load-aborted` gap, not a
+    // surface read off a page the abort broke.
+    const loadAborted = net.blocked.slice(loadMark.blocked).filter((b) => b.phase === "load");
+    if (loadAborted.length) {
+      g.annotate(n.id, { loadAborted: loadAborted.map((b) => `${b.method} ${b.url}`) });
+      pending(n, { role: "page", name: "(page load)", css: null }, "the page sent a write while loading; it was aborted", loadAborted, "write");
+      const broke = net.failures.slice(loadMark.failures).length > 0;
+      if (!r.candidates.length || broke) throw new Error(`load-aborted: ${loadAborted.length} request(s) aborted while the page loaded (${loadAborted[0].method} ${new URL(loadAborted[0].url).pathname})${broke ? " and the page broke" : ", nothing to fire"}`);
+    }
     // A placeholder (found bounded or unreachable) walked for real: read its skeleton now.
     // A node from an older graph (no content key) takes the key of what its route opens now.
     if (KEYED_KINDS.includes(n.kind) && !n.contentKey && r.contentKey) n.contentKey = r.contentKey;
@@ -930,7 +1027,8 @@ export async function explore(g, dir, opts = {}) {
         continue;
       }
       const safety = classify(c);
-      if (safety.verdict === "never" || (safety.verdict === "risky" && risky !== "probe")) {
+      // A money-word choice inside a picker is fired and judged by what it sent (below).
+      if (safety.verdict === "never" || (safety.verdict === "risky" && risky !== "probe" && !safety.choice)) {
         pending(n, c, safety.why, [], "risky-name");
         outcomes.push(unfired(row, `skipped:${safety.verdict}`));
         continue;
@@ -978,10 +1076,14 @@ export async function explore(g, dir, opts = {}) {
           // that sent only reads (an "Apply" that filters) is a read, not a pending write.
           if (safety.verdict === "write-verb" && !res.blocked?.length && !res.reads && !isUnfired(res))
             pending(n, c, `${safety.why}; the click sent no request (a next step, or client-side state)`, [], "write-verb");
+          // The picker choice fired despite its name: reads only keep its edge; a write it sent was
+          // aborted and queued by observe (edge kind write).
+          if (safety.choice && !isUnfired(res)) res.riskyChoice = res.blocked?.length ? `sent a write (aborted, pending): ${safety.why}` : `reads only: ${safety.why}`;
         }
       } catch (e) {
-        if (e instanceof SessionLost || BROWSER_GONE.test(e.message) || NETWORK_GONE.test(e.message)) throw e;
-        res = unfired({ children: [] }, "error", { error: e.message.split("\n")[0] });
+        if (e instanceof SessionEnding) res = ended(n, c, e);
+        else if (e instanceof SessionLost || BROWSER_GONE.test(e.message) || NETWORK_GONE.test(e.message)) throw e;
+        else res = unfired({ children: [] }, "error", { error: e.message.split("\n")[0] });
       }
       const G = groups.get(grp);
       if (G) G.leads.add((res.children ?? []).map((id) => g.data.nodes[id]?.template).join(",") || res.outcome);
@@ -1007,6 +1109,7 @@ export async function explore(g, dir, opts = {}) {
           try {
             return await fireAs(n, ensure, kind, c, o);
           } catch (e) {
+            if (e instanceof SessionEnding) return ended(n, c, e);
             if (e instanceof SessionLost || BROWSER_GONE.test(e.message) || NETWORK_GONE.test(e.message)) throw e;
             return unfired({ children: [] }, "error", { error: e.message.split("\n")[0] });
           }
@@ -1031,7 +1134,7 @@ export async function explore(g, dir, opts = {}) {
     if (entryUrls().has(g.canon(url))) continue;
     try {
       await load(page, url);
-      const onLoad = await dismissOnLoad(page);
+      const onLoad = await dismissOnLoad(page, { onAct: () => acting(page) });
       const r = await page.evaluate(probe, {});
       const { node } = g.addNode({ url: page.url(), signature: r.signature, modules: r.modules, interactive: r.candidates.length, entry: true, label: r.heading || r.title || new URL(page.url()).pathname });
       g.markEntry(node.id);
@@ -1059,9 +1162,25 @@ export async function explore(g, dir, opts = {}) {
         deferred.push(n.id);
         continue;
       }
+      // Never opened again once it signed the session out, nor anything reached through it.
+      const barred = never.match(n.href ?? n.url);
+      if (barred) {
+        markGap(g, n.id, { code: "session-ending", retryable: false }, `never-open: ${barred.pattern}`);
+        save(g, dir);
+        continue;
+      }
       // Reached only through a write (aborted while walking the reference): not replayable, and
       // not a failure. Closed as bounded; its write waits in pending-writes.jsonl for BLOCKED.
+      // When every such write was a page-load request (an older rule aborted it), it is a
+      // retryable `load-aborted` gap instead: `requeue --gaps` drops those edges and re-walks.
       if (g.route(n.id) === null) {
+        const writesIn = Object.values(g.data.edges).filter((e) => e.to === n.id && e.kind === "write");
+        const atLoad = (e) => e.loadAborted || (e.request?.url && reqs.classify({ method: e.request.method ?? "POST", url: e.request.url, phase: "load" }).verdict !== "write");
+        if (writesIn.length && writesIn.every(atLoad)) {
+          markGap(g, n.id, { code: "load-aborted", retryable: true }, "load-aborted: reached only through edges whose writes were page-load requests");
+          save(g, dir);
+          continue;
+        }
         g.setStatus(n.id, "bounded", "reached only through a write: see pending-writes.jsonl");
         n.bound = "reached only through a write";
         save(g, dir);
@@ -1074,6 +1193,19 @@ export async function explore(g, dir, opts = {}) {
         const opened = outs.filter((o) => o.children?.length).length;
         log(`closed ${n.id} ${n.kind.padEnd(6)} ${n.label.slice(0, 60)}  elements ${outs.length}, opened ${opened}, ${((Date.now() - t) / 1000).toFixed(1)}s  frontier ${g.frontier.size}`);
       } catch (e) {
+        if (e instanceof SessionEnding) {
+          // Reaching this node signed the session out: the URL it opened is never opened again.
+          endingNode(e.target, e.message);
+          if (n.status !== "gap") g.setStatus(n.id, "frontier");
+          if (e.alive) {
+            log(`session-ending ${e.target}: never opened again; the login survived, walk goes on`);
+            save(g, dir);
+            continue;
+          }
+          g.signal("walker.blocked", { node: n.id, reason: `${e.message.split("\n")[0]}; log in again` });
+          save(g, dir);
+          throw e;
+        }
         if (e instanceof SessionLost) {
           g.signal("walker.blocked", { node: n.id, reason: `login lost: ${e.message.split("\n")[0]}` });
           g.setStatus(n.id, "frontier");
@@ -1103,7 +1235,7 @@ export async function explore(g, dir, opts = {}) {
         const reason = failureReason(e.message);
         // A transient error already had its retries inside the load; anything else gets a
         // second whole try. Either way the gap says why, so `requeue --gaps` can take it back.
-        if (e instanceof TransientError || n.attempts >= 2) markGap(g, n.id, reason, e.message);
+        if (e instanceof TransientError || e instanceof NeverOpenError || ["load-aborted", "never-open"].includes(reason.code) || n.attempts >= 2) markGap(g, n.id, reason, e.message);
         else g.setStatus(n.id, "frontier");
         log(`failed ${n.id} ${n.label.slice(0, 60)} [${reason.code}]: ${e.message.split("\n")[0]}`);
         g.signal("walker.error", { node: n.id, element: current.element, kind: reason.code, detail: e.message.split("\n")[0].slice(0, 300) });
@@ -1154,6 +1286,9 @@ export function readEntriesFile(text, origin) {
 
 /** Read one URL as an entry node (used by `run.mjs init` and `run.mjs visit`). */
 export async function readEntry(g, url, opts = {}) {
+  // `opts.dir`: the graph dir, whose never-open.jsonl an entry is refused by too.
+  const barred = opts.dir ? new NeverOpen(join(opts.dir, "never-open.jsonl")).match(url) : null;
+  if (barred) throw new NeverOpenError(`never-open: ${url} matches ${barred.pattern} (it signed the session out once)`);
   const { context, close } = await openReference(opts);
   // Which elements listen for a right-click, a double-click, a drag or keys (interactions.mjs).
   await context.addInitScript({ content: LISTENER_HOOK });

@@ -1,3 +1,5 @@
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
+
 // What the explorer must not fire on the reference unattended (SKILL.md section 4: paid,
 // sending, publishing, deleting or account-changing actions are never fired; the first write
 // of each kind is a BLOCKED). Two layers, because either alone has let a write through:
@@ -17,15 +19,66 @@ const words = (list) => new RegExp(`\\b(${list.join("|")})\\b`, "i");
 /**
  * Money, messages to other people, deletion: not clicked unless the run says `--risky probe`
  * (writes still aborted); otherwise queued for the BLOCKED step.
+ *
+ * Deletion and messaging words are risky wherever they stand in the name.
  */
-export const RISKY = words([
+const RISKY_DELETE = words([
   "delete", "remove", "discard", "destroy", "erase", "purge", "revoke", "disconnect", "unlink",
-  "cancel (my |your |the )?(subscription|plan|account|order|booking)", "unsubscribe", "downgrade",
-  "pay", "payment", "purchase", "buy", "checkout", "place order", "upgrade", "subscribe", "add card", "top up",
-  "send", "publish", "invite", "transfer", "withdraw", "book now", "reserve",
-  // metered: spends a credit or token the account holds, even when nothing is charged
-  "credits?", "tokens?", "spend", "unlock", "redeem",
+  "cancel (my |your |the )?(subscription|plan|account|order|booking)", "unsubscribe",
+  "send", "publish", "invite", "withdraw",
 ]);
+
+/**
+ * Money and metered spending, matched as whole actions only. "Pay" is a verb only at the head of
+ * the name with nothing, an amount or a payee after it ("Pay", "Pay now", "Pay $40", "Pay
+ * invoice"). In a noun phrase ("Current Pay Period", "Pay Policies", "Pay code", "Payroll",
+ * "Suspension without Pay") it names a thing, and choosing that thing reads a grid.
+ */
+const MONEY_ACTIONS = [
+  /^\s*pay\s*$/i,
+  /^\s*pay\s+(now|later|online|in full|it|with\b|by\b|for\b|(the |your |my |this |an? )?(invoice|bill|balance|amount|order|fees?|total|dues|deposit|rent|subscription)s?\b)/i,
+  /^\s*pay\s*[$€£¥]?\s*\d/i,
+  /\bpay now\b/i,
+  /^\s*payments?\s*$/i,
+  /\b(make|submit|confirm|complete|process|send|authori[sz]e|schedule)\s+(a |the |your |this )?payment\b/i,
+  /^\s*(buy|purchase)\s*(now)?\s*$/i,
+  /^\s*(buy|purchase)\s+(it|this|more|now|an? |the |credits?|tokens?|seats?|licen[cs]es?|plan|subscription)\b/i,
+  /\b(buy|order|purchase) now\b/i,
+  /\b(check\s*-?\s*out|checkout)\b/i,
+  /\b(place|complete|confirm) (an? |the |your )?(order|purchase)\b/i,
+  /\b(subscribe|upgrade|downgrade)\b/i,
+  /\b(add (a )?(card|payment method|funds)|top up)\b/i,
+  /^\s*transfer\s*$/i,
+  /\btransfer\s+(funds|money|balance|credits?|[$€£¥]|\d)/i,
+  /^\s*(issue (a )?)?refund\b/i,
+  /^\s*charge(\s+(now|it|card|the card|customer|[$€£¥]|\d).*)?\s*$/i,
+  /\b(book now|reserve now|donate)\b/i,
+  /^\s*(book|reserve)\s*$/i,
+  // metered: spends a credit or token the account holds, even when nothing is charged
+  /\b(spend|redeem|unlock)\b/i,
+  /\b(use|spend|costs?)\s+(\d+\s+)?(credits?|tokens?)\b/i,
+  /\b\d+\s+(credits?|tokens?)\b/i,
+];
+
+/** The money action a name reads as (`"Pay now"`), or null for a noun phrase. */
+export function moneyAction(name = "") {
+  for (const re of MONEY_ACTIONS) {
+    const m = String(name).match(re);
+    if (m) return m[0].trim();
+  }
+  return null;
+}
+
+/** A name that reads as money, messaging or deletion (`RISKY.test(name)`). */
+export const RISKY = { test: (name = "") => RISKY_DELETE.test(name) || moneyAction(name) !== null };
+
+/**
+ * Roles that choose a value. Inside a picker (a listbox, menu, radiogroup or tree: `inPicker`
+ * from page-probe.mjs) choosing one re-reads what the picker filters, so a money-word choice there
+ * is fired and judged by what it sent: reads only make it an ordinary edge; a write is aborted
+ * and queued as usual. Deletion and messaging names stay held even there.
+ */
+export const CHOICE_ROLES = new Set(["option", "radio", "menuitemradio", "menuitemcheckbox", "treeitem", "menuitem"]);
 
 /**
  * Ordinary form verbs. Clicked, because most of them open the next step (a confirm, a picker,
@@ -34,10 +87,18 @@ export const RISKY = words([
  */
 export const WRITE_VERB = words(["save", "apply", "submit", "confirm", "sync( now)?", "import", "upload", "reset", "restore", "generate", "archive", "share", "post", "push"]);
 
-/** `{ verdict: "never" | "risky" | "write-verb" | "ok", why }` for one probed candidate. */
-export function classify({ name = "", href = "" }) {
+/**
+ * `{ verdict: "never" | "risky" | "write-verb" | "ok", why, choice? }` for one probed candidate.
+ * `choice: true` marks a money-word choice inside a picker: the walker fires it and keeps the
+ * edge when only reads went out (explore.mjs).
+ */
+export function classify({ name = "", href = "", role = "", inPicker = false }) {
+  name ??= "";
   if (NEVER.test(name) || (href && NEVER_HREF.test(href))) return { verdict: "never", why: "ends the session or the account" };
-  if (RISKY.test(name)) return { verdict: "risky", why: `name reads as money, messaging or deletion: "${name.match(RISKY)[0]}"` };
+  const del = name.match(RISKY_DELETE);
+  if (del) return { verdict: "risky", why: `name reads as deletion or messaging: "${del[0]}"` };
+  const money = moneyAction(name);
+  if (money) return { verdict: "risky", why: `name reads as money: "${money}"`, ...(inPicker && CHOICE_ROLES.has(role) ? { choice: true } : {}) };
   if (WRITE_VERB.test(name)) return { verdict: "write-verb", why: `name reads as a write: "${name.match(WRITE_VERB)[0]}"` };
   return { verdict: "ok", why: "" };
 }
@@ -54,13 +115,16 @@ const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 export const READ_WORDS = new Set([
   "search", "list", "get", "query", "read", "reads", "multiread", "fetch", "preview", "count", "load", "filter", "find",
   "lookup", "retrieve", "goto", "refresh", "suggest", "autocomplete", "typeahead", "browse",
+  // what a page reads to draw itself: its configuration, the caller's permissions, a partial or
+  // its banners (`/x/action-config`, `/x/permissions`, `/x/partial-content`, `/banners`)
+  "config", "configs", "configuration", "permissions", "content", "contents", "banner", "banners",
 ]);
 /** Read words that are verbs, so they name a read in any segment, not only the last. */
 const READ_VERBS = new Set(["search", "get", "query", "read", "multiread", "fetch", "preview", "load", "find", "lookup", "retrieve", "goto"]);
 /** Read verbs glued to a noun without a separator (`gotoconfig`, `getusers`): matched as a prefix. */
 const READ_PREFIX = ["goto", "get", "fetch", "search", "query", "read", "load", "lookup"];
 /** ... or as a suffix (`suitexsearch`, `multiread`). */
-const READ_SUFFIX = ["search", "read", "reads", "query", "lookup"];
+const READ_SUFFIX = ["search", "read", "reads", "query", "lookup", "config", "configuration", "permissions"];
 /** Words that name a change. Any one anywhere in a request makes it a write. */
 export const WRITE_WORDS = new Set([
   "create", "add", "insert", "new", "update", "edit", "modify", "patch", "put", "set", "save", "delete", "remove", "destroy",
@@ -81,6 +145,55 @@ const QUERY_KEYS = new Set([
 ]);
 /** Analytics and logging beacons: never sent, never a write, never a pending row. */
 const TELEMETRY = new Set(["telemetry", "analytics", "beacon", "beacons", "tracking", "track", "rum", "metrics", "collect", "clientlog", "clientlogs", "logging", "pixel", "sentry"]);
+/**
+ * Analytics, session-replay and error-monitoring hosts. Every request to one is telemetry,
+ * whatever its method or path (`data.pendo.io/data/ptm.gif` was once counted as a write).
+ */
+export const TELEMETRY_HOSTS = /(^|\.)(pendo\.io|pendo-[a-z0-9-]+\.storage\.googleapis\.com|segment\.(io|com)|segmentapis\.com|google-analytics\.com|analytics\.google\.com|googletagmanager\.com|doubleclick\.net|mixpanel\.com|mxpnl\.com|amplitude\.com|hotjar\.(com|io)|sentry\.io|sentry-cdn\.com|datadoghq\.(com|eu)|browser-intake-datadoghq\.(com|eu)|datadoghq-browser-agent\.com|nr-data\.net|newrelic\.com|appdynamics\.com|eum-appdynamics\.com|fullstory\.com|heapanalytics\.com|heap\.io|clarity\.ms|logrocket\.(io|com)|bugsnag\.com|quantummetric\.com|walkme\.com|gainsight\.com|intercom\.io)$/i;
+/** Beacon paths that are telemetry on a host other than the app's own (`/collect`, `/track`, ...). */
+const THIRD_PARTY_BEACON = new Set(["collect", "beacon", "beacons", "track", "events", "event", "batch", "rum", "log", "logs", "ping"]);
+
+/** The registrable part of a host, roughly: its last two labels (an IP stays whole). */
+const siteOf = (host) => (/^[\d.]+$|^\[/.test(host) ? host : host.split(".").slice(-2).join("."));
+
+/**
+ * Telemetry by where it goes: a known analytics host, or a beacon path on a third-party host.
+ * `origin` is the app's own origin; without it only the host list decides.
+ */
+export function telemetryHost(url, origin = null) {
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    return null;
+  }
+  if (TELEMETRY_HOSTS.test(u.hostname)) return { verdict: "telemetry", why: `analytics host ${u.hostname}` };
+  if (!origin) return null;
+  let own;
+  try {
+    own = new URL(origin).hostname;
+  } catch {
+    return null;
+  }
+  if (siteOf(u.hostname) === siteOf(own)) return null;
+  const seg = u.pathname.split("/").filter(Boolean).find((x) => THIRD_PARTY_BEACON.has(x.toLowerCase().replace(/\.\w+$/, "")));
+  return seg ? { verdict: "telemetry", why: `"/${seg}" beacon on third-party host ${u.hostname}` } : null;
+}
+
+/**
+ * Write words that name a change for certain. A POST sent while a page loads (before any
+ * user-like action on it) is a read by construction unless its name holds one of these:
+ * `/auth-migration-banners/post` or `/x/session-context` are let through at load, an
+ * `/x/visits/update` is not.
+ */
+export const CLEAR_WRITE_WORDS = new Set([
+  "create", "add", "insert", "update", "edit", "modify", "patch", "put", "set", "save", "delete", "remove", "destroy", "purge",
+  "clear", "reset", "restore", "submit", "apply", "approve", "reject", "refuse", "signoff", "commit", "import", "upload",
+  "execute", "send", "cancel", "publish", "unpublish", "lock", "unlock", "archive", "assign", "unassign", "invite", "transfer",
+  "pay", "logout", "logoff", "signout", "merge", "rename", "enable", "disable", "toggle", "trigger", "accept", "decline",
+  "register", "subscribe", "unsubscribe", "vote", "generate", "sync", "write", "persist", "upsert", "replace", "duplicate",
+  "clone", "punch", "checkout", "purchase", "buy", "refund",
+]);
 
 /** Lower-case words of a path segment, key or value: split on separators and camelCase. */
 export function tokens(s) {
@@ -93,9 +206,12 @@ export function tokens(s) {
 }
 
 const hasWrite = (toks) => toks.find((t) => WRITE_WORDS.has(t));
-const readWordIn = (toks, { verbsOnly = false } = {}) =>
-  toks.find((t) => (verbsOnly ? READ_VERBS : READ_WORDS).has(t)) ??
-  toks.find((t) => READ_PREFIX.some((w) => t.length > w.length + 2 && t.startsWith(w)) || READ_SUFFIX.some((w) => t.length > w.length + 2 && t.endsWith(w)));
+/** Write verbs that, glued to a read suffix (`saveconfig`, `setpermissions`), make it a write. */
+const GLUED_WRITE = ["save", "update", "edit", "modify", "delete", "remove", "create", "insert", "submit", "apply", "approve", "reject", "reset", "restore", "cancel", "publish", "upsert", "assign", "enable", "disable", "toggle", "persist", "write", "import", "upload", "set", "add", "put"];
+const gluedWrite = (t) => GLUED_WRITE.some((w) => t.startsWith(w) && (w.length > 3 ? t.length > w.length : READ_SUFFIX.includes(t.slice(w.length))));
+const gluedRead = (t) =>
+  !gluedWrite(t) && (READ_PREFIX.some((w) => t.length > w.length + 2 && t.startsWith(w)) || READ_SUFFIX.some((w) => t.length > w.length + 2 && t.endsWith(w)));
+const readWordIn = (toks, { verbsOnly = false } = {}) => toks.find((t) => (verbsOnly ? READ_VERBS : READ_WORDS).has(t)) ?? toks.find(gluedRead);
 
 /** Path segments with file extensions and api/version prefixes dropped. */
 function segments(pathname) {
@@ -188,7 +304,8 @@ export function bodyVerdict(postData) {
  * next run. A write signal in the body still wins over a learned rule.
  */
 export class RequestClassifier {
-  constructor({ allowPost = [], readPosts = "off", rulesPath = null, onLearn = null } = {}) {
+  constructor({ allowPost = [], readPosts = "off", rulesPath = null, onLearn = null, origin = null } = {}) {
+    this.origin = origin;
     this.allowPost = allowPost;
     this.readPosts = readPosts;
     this.rulesPath = rulesPath;
@@ -202,8 +319,16 @@ export class RequestClassifier {
     return this;
   }
 
-  classify({ method, url, postData = "" }) {
+  /**
+   * `phase` is "load" while a page loads or navigates (before any user-like action on it) and
+   * "action" otherwise (the default). At load a POST is a read unless its name holds a clear
+   * write word (CLEAR_WRITE_WORDS) or its body names a write; the rule is learned as a
+   * `load` rule, which applies at load only.
+   */
+  classify({ method, url, postData = "", phase = "action" }) {
     const m = method.toUpperCase();
+    const host = telemetryHost(url, this.origin);
+    if (host) return host;
     if (READ_METHODS.has(m)) return { verdict: "read", why: "read method" };
     let pathname;
     try {
@@ -218,8 +343,15 @@ export class RequestClassifier {
     if (byBody.why === "a GraphQL query") return byBody;
     if (byBody.verdict === "write") return byBody;
     if (this.readPosts !== "auto" || m !== "POST") return { verdict: "write", why: `${m} with --read-posts ${this.readPosts}` };
-    if (byName.verdict === "write") return byName;
     const template = pathTemplate(url);
+    const loadRule = `${m} ${template} (load)`;
+    const atLoad = phase === "load";
+    if (byName.verdict === "write") {
+      const clear = segments(pathname).flatMap(tokens).find((t) => CLEAR_WRITE_WORDS.has(t));
+      if (!atLoad || clear) return clear && atLoad ? { ...byName, why: `${byName.why} at load ("${clear}" names a change)` } : byName;
+      if (this.rules.has(loadRule)) return { verdict: "read", why: `learned rule ${loadRule}`, rule: loadRule };
+      return this.#learn(loadRule, "load", `sent while the page loaded; ${byName.why} is not a clear write`, url);
+    }
     const b = byBody.shape;
     const shape = b?.kind === "json" ? b.keys.slice().sort().join(",") : b?.kind === "form" ? `form:${b.actions.join("|")}` : (b?.kind ?? "empty");
     const urlRule = `${m} ${template}`;
@@ -228,6 +360,10 @@ export class RequestClassifier {
     if (this.rules.has(bodyRule)) return { verdict: "read", why: `learned rule ${bodyRule}`, rule: bodyRule };
     if (byName.verdict === "read") return this.#learn(urlRule, "url", byName.why, url);
     if (byBody.verdict === "read") return this.#learn(bodyRule, "body", byBody.why, url);
+    if (atLoad) {
+      if (this.rules.has(loadRule)) return { verdict: "read", why: `learned rule ${loadRule}`, rule: loadRule };
+      return this.#learn(loadRule, "load", "sent while the page loaded, before any action on it", url);
+    }
     return { verdict: "write", why: "nothing names it a read" };
   }
 
@@ -318,4 +454,70 @@ export function pairFrames(frames) {
     }
   }
   return calls;
+}
+
+// ---------- routes that end the session ----------
+//
+// Some routes sign the session out when opened (an unlicensed area that redirects to `#/logout`).
+// One visit ends the login for every tool sharing it, so such a URL is recorded once in
+// never-open.jsonl (graph dir) and refused before every later navigation, in any walk.
+
+/** A path or fragment that ends a session: logout, signout, signoff, sso .. logout, session-end. */
+// "signoff" is deliberately absent: in workforce apps "sign-off" is a timecard approval route, not a logout.
+export const SESSION_END_URL = /(^|[/#!?&=._-])(log-?out|log-?off|sign-?out|end-?session|session[/_-]?(end(ed)?|destroy|expired?))([/#!?&=._-]|$)/i;
+
+/** True when `url` (its path or fragment) reads as a session-ending route. */
+export function sessionEndingUrl(url) {
+  try {
+    const u = new URL(url);
+    return SESSION_END_URL.test(`${u.pathname}${u.hash}`);
+  } catch {
+    return false;
+  }
+}
+
+const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * The never-open pattern for a URL: its origin and path, plus its route fragment when it has one
+ * (`#/forecast`) that is not itself the logout, so a hash-routed app is not shut out whole.
+ */
+export function neverOpenPattern(url) {
+  const u = new URL(url);
+  const base = `${u.origin}${u.pathname.replace(/\/+$/, "")}`;
+  const route = /^#!?\//.test(u.hash) && !SESSION_END_URL.test(u.hash) ? u.hash.replace(/[?].*$/, "").replace(/\/+$/, "") : "";
+  return route ? `^${esc(base)}/?${esc(route)}(?:[/?]|$)` : `^${esc(base)}/?(?:[?#]|$)`;
+}
+
+/** never-open.jsonl: URL patterns no walk may navigate to again. */
+export class NeverOpen {
+  constructor(path = null) {
+    this.path = path;
+    this.rows = [];
+    if (path && existsSync(path)) {
+      for (const l of readFileSync(path, "utf8").split("\n").filter(Boolean)) {
+        try {
+          const r = JSON.parse(l);
+          if (r?.pattern) this.rows.push({ ...r, re: new RegExp(r.pattern, "i") });
+        } catch {}
+      }
+    }
+  }
+
+  /** The row whose pattern matches `url`, or null. */
+  match(url) {
+    if (!url) return null;
+    return this.rows.find((r) => r.re.test(String(url))) ?? null;
+  }
+
+  /** Record `url` (once per pattern); returns the row. */
+  add(url, extra = {}) {
+    const pattern = neverOpenPattern(url);
+    const had = this.rows.find((r) => r.pattern === pattern);
+    if (had) return had;
+    const row = { pattern, url, ...extra, at: new Date().toISOString() };
+    if (this.path) appendFileSync(this.path, JSON.stringify(row) + "\n");
+    this.rows.push({ ...row, re: new RegExp(pattern, "i") });
+    return row;
+  }
 }

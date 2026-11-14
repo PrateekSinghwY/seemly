@@ -156,6 +156,8 @@ export function probe({ scopeCss = null, sigOnly = false, maxDepth = 18, maxModu
       field: (el.tagName === "INPUT" && !["checkbox", "radio", "button", "submit", "reset", "image"].includes(type)) || el.tagName === "TEXTAREA",
       options: el.tagName === "SELECT" ? [...el.options].map((o) => text(o.textContent, 60)) : null,
       inNav: !!el.closest("nav,header,[role=navigation],[role=banner],[role=menubar]"),
+      // a choice inside a picker: safety.mjs fires a money-word choice here and judges it by its requests
+      inPicker: !!el.parentElement?.closest("[role=listbox],[role=menu],[role=radiogroup],[role=tree],[role=grid][aria-multiselectable],select,datalist"),
       cardLike: !el.matches(SEL),
       rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) },
     });

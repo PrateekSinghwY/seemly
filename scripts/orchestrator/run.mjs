@@ -13,8 +13,11 @@
 //             [--entries-from <file>]                              entry pages: one URL per line, or a JSON list / route map
 //             [--no-interactions]                                  clicks only (no right-click, keys, drags, forms, uploads)
 //     visit <url>                                                  add one more entry page
-//     requeue <nodeId> | requeue --failed | requeue --gaps [--reason <r>] | requeue --kind overlay,modal,menu,state | gap <nodeId> --reason "..."
-//                                                                  corrections; --gaps puts back every gap with a retryable reason
+//     requeue <nodeId> | requeue --failed | requeue --gaps [--reason <r>] | requeue --kind overlay,modal,menu,state | requeue --risky
+//     gap <nodeId> --reason "..."                                  corrections; --gaps puts back every gap with a retryable reason
+//                                                                  (and write-only nodes whose writes were page-load reads);
+//                                                                  --risky puts back every node with an element held by a name
+//                                                                  rule the current safety.mjs no longer applies
 //     scope --map <scope.json>                                     tag every node with a scope (component id)
 //     pending                                                      writes waiting for BLOCKED
 //   build phase
@@ -51,8 +54,9 @@ import { writeLive, writeTree } from "./views.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const skill = dirname(dirname(here));
-const argv = process.argv.slice(2);
-const cmd = argv[0];
+const cmd = process.argv[2];
+// `requeue --risky` takes no value, while `explore --risky record|probe` does.
+const argv = process.argv.slice(2).map((a, i, all) => (cmd === "requeue" && a === "--risky" && (all[i + 1] === undefined || all[i + 1].startsWith("--")) ? "--risky=requeue" : a));
 const { values: o, positionals } = parseArgs({
   args: argv.slice(1),
   allowPositionals: true,
@@ -215,7 +219,7 @@ switch (cmd) {
     g.data.meta.prefix = o.prefix?.length > 1 ? o.prefix : (o.prefix?.[0] ?? (t.pathname.replace(/\/[^/]*$/, "") || "/"));
     const seeded = o["entries-from"] ? walker.readEntriesFile(readFileSync(o["entries-from"], "utf8"), t.origin) : [];
     for (const url of [o.target, ...o.entry, ...seeded]) {
-      const { node, isNew } = await readEntry(g, url, browser);
+      const { node, isNew } = await readEntry(g, url, { ...browser, dir });
       say(`${isNew ? "entry" : "known"} ${node.id} ${node.label}`);
     }
     save(g, dir);
@@ -223,7 +227,7 @@ switch (cmd) {
     break;
   }
   case "visit": {
-    const { node, isNew } = await readEntry(g, positionals[0], browser);
+    const { node, isNew } = await readEntry(g, positionals[0], { ...browser, dir });
     save(g, dir);
     say(`${isNew ? "entry" : "known"} ${node.id} ${node.label}`);
     break;
@@ -259,7 +263,7 @@ switch (cmd) {
         if (!(e instanceof SessionLost)) throw e;
         writeTree(g, dir);
         if (!waitMin || !stateFile || !existsSync(stateFile)) {
-          say(`BLOCKED: ${e.message}. Log in again in the headed profile, then re-run explore.`);
+          say(`BLOCKED: ${e.message}. Log in again in the headed profile, then re-run explore.${e.target ? ` ${e.target} is in never-open.jsonl and will not be opened again.` : ""}`);
           process.exitCode = 3;
           break;
         }
@@ -283,10 +287,23 @@ switch (cmd) {
     // --gaps: every gap whose reason is retryable (a missing reason counts as retryable),
     // narrowed by --reason <text>.
     if (o.gaps) {
+      // Write-only nodes whose writes were page-load reads first: their write edges go, and the
+      // nodes they came from are walked again (gaps.mjs requeueWriteOnly).
+      const wo = o.reason ? [] : (walker.requeueWriteOnly?.(g, { allowPost: o["allow-post"].map((x) => new RegExp(x)) }) ?? []);
       const done = g.requeueGaps({ reason: o.reason, retryable: retryRule() });
       save(g, dir);
-      for (const n of done) say(`requeued ${n.id} ${n.label}`);
+      for (const n of [...wo, ...done]) say(`requeued ${n.id} ${n.label}`);
+      if (wo.length) say(`requeued ${wo.length} node(s) reached only through page-load writes, with their openers`);
       say(`requeued ${done.length} gap node(s)`);
+      break;
+    }
+    // --risky: elements skipped as risky by name, re-judged by the current rule (gaps.mjs requeueRisky).
+    if (o.risky === "requeue") {
+      if (!walker.requeueRisky) throw new Error("requeue --risky needs explore.mjs to load");
+      const r = walker.requeueRisky(g, dir);
+      save(g, dir);
+      for (const n of r.nodes) say(`requeued ${n.id} ${n.label}`);
+      say(`requeued ${r.nodes.length} node(s): ${r.refire} of ${r.skipped} element(s) skipped as risky are fired under the current rule; ${r.dropped} risky-name row(s) dropped from pending-writes.jsonl`);
       break;
     }
     // --kind: nodes of those kinds with no content key (an older graph merged look-alike overlays),

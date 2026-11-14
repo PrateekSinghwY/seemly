@@ -340,18 +340,21 @@ What the walker guarantees per node (`explore.mjs`, each with a test in `test/wa
 - **Reads are told from writes** by one `RequestClassifier` (`safety.mjs`): read methods pass;
   a POST passes when `--allow-post` matches, a GraphQL query, or (with `--read-posts auto`) its
   path or body names a read, and the rule it passed by is learned into `allowed-posts.jsonl`
-  and reloaded next run; a write word in the body always wins. Analytics beacons are dropped,
-  not counted as writes. An edge is a `write` only when a request it sent was a write.
+  and reloaded next run; a write word in the body always wins. POSTs a page sends while it loads
+  are reads unless clearly named writes (`(load)` rules). Analytics beacons and analytics hosts
+  are dropped and not counted as writes. An edge is a `write` only when a request its own act
+  sent was a write, never a write the page it opened sent while loading.
   `pending-writes.jsonl` rows carry a `kind`: `write` (a request was blocked), `risky-name`
   (a money, messaging or deletion name, held unclicked) or `write-verb` (a Save-like name that
   sent nothing: a next step to capture once).
 - **Session loss stops the run.** A sign-in page or a session-ended notice mid-walk throws
   `SessionLost`: the node goes back on the frontier and `explore` exits 3 (`BLOCKED`, or waits
-  for a new login with `--relogin-wait`). A transient error (5xx, 429, a "service unavailable"
+  for a new login with `--relogin-wait`). A route that signed the session out (`SessionEnding`)
+  is also put in `never-open.jsonl` and never opened again. A transient error (5xx, 429, a "service unavailable"
   page, a timeout) is retried with doubling backoff (`--retries`, `--backoff-ms`). A node given up
   on carries `gapReason: { code, retryable, message }` (`transient`, `replay-not-found`,
-  `http-auth`, `http-4xx`, `write-only`, `invariant`, ...); `O requeue --gaps` puts every
-  retryable one back.
+  `http-auth`, `http-4xx`, `write-only`, `invariant`, `load-aborted`, `session-ending`, ...);
+  `O requeue --gaps` puts every retryable one back.
 - **Websocket capture.** Every socket frame is recorded per node; sent calls are paired with
   their answers (by id, else name) and saved under `nodes/<id>/ws/`, listed as `wsReads` in
   `inventory.json`. A sent call that is not a read is dropped in the browser and queued like an
@@ -396,13 +399,42 @@ template and parent inheritance); `status`, `tree`, `compare`, `verify` and `rep
 pair (section 6) and exits 1 when any pair fails; `O report --scope id` writes the table of each
 reference node, its clone node, every check and its reason, and every ref-only node with why.
 
-Safety is mechanical (`scripts/orchestrator/safety.mjs`): session-ending names are never
-clicked; money, messaging, deletion and metered (credit, token) names are queued in
-`pending-writes.jsonl` instead (`--risky probe` clicks them too); and every non-read request
-is aborted in the browser, so a control that writes anyway shows its failure path and is
-queued with the request it tried. A search or report that POSTs a read is allowed with
-`--allow-post <regex>` after you have read its row. `explore` exiting 3 means the login was lost:
-print `BLOCKED` (environment changed).
+Safety is mechanical (`scripts/orchestrator/safety.mjs`, tests in `test/safety-defects.test.mjs`):
+- **Names.** Session-ending names are never clicked. Deletion and messaging names are held
+  wherever the word stands. Money and metered names are held only as whole actions ("Pay",
+  "Pay now", "Pay $40", "Make payment", "Buy now", "Checkout", "Subscribe", "Transfer funds",
+  "Refund", "Charge card", "Uses 5 credits"), never as part of a noun phrase ("Current Pay
+  Period", "Pay rule", "Pay code", "Payroll"). Held names go to `pending-writes.jsonl`
+  (`--risky probe` clicks them too). A money-word choice inside a picker (an option, radio or
+  menu item in a listbox, menu, radiogroup or tree) is fired and judged by its requests: reads
+  only keep its edge (`riskyChoice: "reads only"`), and a write is aborted and queued as usual.
+  After the rule changes, `O requeue --risky` puts back every node holding an element the
+  current rule would fire.
+- **Requests.** Every non-read request is aborted in the browser, so a control that writes
+  anyway shows its failure path and is queued with the request it tried. A search or report
+  that POSTs a read is allowed with `--allow-post <regex>` after you have read its row. With
+  `--read-posts auto`, a POST sent while a page loads (from a document load until the walker's
+  first act on it) is a read unless its name holds a clear write verb (`CLEAR_WRITE_WORDS`) or
+  its body names a write; it is learned as a `(load)` rule in `allowed-posts.jsonl`. A clear
+  write sent at load is still aborted and queued, but it never makes the opening edge a write.
+  When the page then shows nothing to fire, or breaks, the node is a retryable `load-aborted`
+  gap, and `O requeue --gaps` also takes back nodes an older rule bounded as write-only.
+- **Telemetry.** Requests to analytics, replay and monitoring hosts (Pendo, Segment, Google
+  Analytics or Tag Manager, Mixpanel, Amplitude, Hotjar, Sentry, Datadog RUM, New Relic,
+  AppDynamics, FullStory, Heap and others: `TELEMETRY_HOSTS`), and `/collect`, `/beacon`,
+  `/track` or `/events` on a third-party host, are aborted and counted as neither a write nor a
+  read.
+- **Routes that end the session.** A navigation that lands on, or passes through, a URL with
+  logout, signout, signoff or session-end in its path or fragment is session-ending. So is one
+  that reaches the sign-in page in one hop while the login still works in a fresh tab (the
+  route throws the session out). Its URL goes into `never-open.jsonl` in the graph dir. Its
+  nodes become `gap: session-ending` (not retryable), and its opener edge becomes a
+  `session-ending` edge, which no replay route uses. Every later navigation checks the list
+  first, in this walk and every later one: link reads, replays, entries, and in-page navigations
+  (the document request is refused). When the login is gone, `explore` exits 3 as for a lost
+  session. Edit `never-open.jsonl` only to lift a ruling you have checked by hand.
+
+`explore` exiting 3 means the login was lost: print `BLOCKED` (environment changed).
 
 You keep the judgment the walker cannot make, in Claude in Chrome:
 - every row of `pending-writes.jsonl` that the build needs is a write to capture: **the first

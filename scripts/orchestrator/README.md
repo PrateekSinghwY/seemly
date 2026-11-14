@@ -17,7 +17,7 @@ Site-agnostic: nothing here names a target. A build's data lives in its own
 | L | learning engine | `../../learning/` | done 2026-10-14; packets call `select` per unit since 2026-10-26 |
 | 2 | live diagram from the graph | `views.mjs` (`graph.html`, `tree.md`) | done 2026-10-26 |
 | 2b | streamed live tree: `watch` serves `events.jsonl` over SSE to `watch.html`; events name their agent (`SEEMLY_AGENT` / `--agent`); walker position (`walker.at` per element), `walker.error` / `blocked` / `resumed` / `done`, `unit.claimed` / `done` / `blocked`; stall shown after 90 s silence; replay with a scrubber; seemly-video writes the same events (`video/scripts/video_live.py`) | `watch.mjs` `watch.html` `graph.mjs` `store.mjs` `explore.mjs` `run.mjs` | done 2026-11-14 (`test/watch`) |
-| 3 | explore coordinator: pop, reach by replay route, capture, fire every element, push children, until closed; writes aborted, risky names held | `explore.mjs` `page-probe.mjs` `safety.mjs` `bound.mjs` `run.mjs` | done 2026-10-26, e2e on a fixture app (`X-EXPLORE`) |
+| 3 | explore coordinator: pop, reach by replay route, capture, fire every element, push children, until closed; writes aborted, risky names held | `explore.mjs` `page-probe.mjs` `safety.mjs` `gaps.mjs` `bound.mjs` `run.mjs` | done 2026-10-26, e2e on a fixture app (`X-EXPLORE`) |
 | 4 | build phase: units in dependency order, one at a time, a packet per unit | `build.mjs` `run.mjs` | done 2026-10-26 (`X-FLOW`) |
 | 5 | `SKILL.md` drives the coordinator instead of prose | `SKILL.md` sections 4-5, `reference/graph.md` | done 2026-10-26 |
 | 6 | first real audit (reference vs clone, 2 logged-in areas): parallel workers per area, saved-login browsers instead of one CDP window, clean SIGTERM, failed-request log per click, write-only nodes closed as bounded, template sampling, walked-graph diff | `explore.mjs` `compare.mjs` `../lib/export-login.mjs` | done 2026-10-26 |
@@ -126,10 +126,48 @@ or state takes its parent's, until nothing changes. Everything else is `unscoped
 ### 9. Gaps that can be retried
 
 The walker records why it gave up on a node: `gapReason: { code, retryable, message }`
-(`explore.mjs` `markGap`). `O requeue --gaps [--reason text]` (`graph.mjs` `requeueGaps`) puts
-every gap whose reason is retryable back on the frontier with its attempts reset, judging by
-the walker's exported `gapReason` when present and by `isRetryableReason` otherwise. A gap
-with no reason at all is retried; out of scope, rulings, HTTP 4xx and write-only are not.
+(`gaps.mjs` `markGap`, re-exported by `explore.mjs`). `O requeue --gaps [--reason text]`
+(`graph.mjs` `requeueGaps`) puts every gap whose reason is retryable back on the frontier with
+its attempts reset, judging by the walker's exported `gapReason` when present and by
+`isRetryableReason` otherwise. A gap with no reason at all is retried; out of scope, rulings,
+HTTP 4xx, write-only, `session-ending` and `never-open` are not; `load-aborted` is. Without
+`--reason` it first runs `gaps.mjs` `requeueWriteOnly`: a node bounded as "reached only through
+a write" (or a `load-aborted` gap) whose every write edge in was a page-load read under the
+current classifier loses those edges, and it and their openers go back on the frontier.
+
+`O requeue --risky` (`gaps.mjs` `requeueRisky`) reads each walked node's `inventory.json` and
+puts back every node holding an element `skipped:risky` that the current `classify` would fire
+(its name is no longer risky, or it is a money-word choice a picker may hold). The node's
+template forgets its seen keys, so template sampling does not skip it, and `risky-name` rows of
+`pending-writes.jsonl` that the rule no longer holds are dropped.
+
+### 9a. Safety rules (`safety.mjs`, `test/safety-defects.test.mjs`)
+
+- **Names** (`classify`): deletion and messaging words anywhere; money and metered words only as
+  whole actions (`moneyAction`: "Pay now", "Make payment", "Buy now", "Checkout", "Transfer
+  funds", ...), never inside a noun phrase ("Current Pay Period", "Pay code"). A money-word
+  option, radio or menu item inside a picker (`inPicker` from `page-probe.mjs`) is `choice: true`:
+  the walker fires it, keeps the edge when only reads went out, and notes `riskyChoice` on its row.
+- **Load-time reads** (`RequestClassifier.classify({ ..., phase })`): the walker tracks each page's
+  phase, `load` from a main-frame document request until its first act (click, key, hover,
+  dismiss), else `action`. At load, with `--read-posts auto`, a POST is a read unless a
+  `CLEAR_WRITE_WORDS` verb is in its path or its body names a write; the rule is learned as
+  `POST <template> (load)`. Read words now include config, permissions, content, banners and
+  `get...config` / `goto...config` forms. A write the opened page sent at load is queued
+  (`phase: "load"` on the blocked row) and noted on the edge (`loadAborted`), never making it a
+  write. A node whose load aborted a write and then showed nothing, or broke, is a
+  `load-aborted` gap.
+- **Telemetry** (`telemetryHost`): any request to a `TELEMETRY_HOSTS` host, and `/collect`,
+  `/beacon`, `/track`, `/events` ... on a host outside the app's site, is aborted and never a
+  write or a read.
+- **Session-ending routes** (`SESSION_END_URL`, `NeverOpen`): a navigation whose URL chain
+  (document requests and main-frame navigations since the last act) holds logout, signout,
+  signoff or session-end in a path or fragment throws `SessionEnding` (a `SessionLost`, exit 3).
+  So does a one-hop landing on the sign-in page while a fresh tab still has the login; then the
+  walk goes on. The opened URL's pattern (origin and path, plus a route fragment) is appended to
+  `never-open.jsonl`, the nodes at it become `gap: session-ending`, and edges into them become
+  `session-ending` (cost Infinity, never replayed). `load`, `readLink`, `readEntry` (with
+  `dir`), the explore loop and the context route (document requests) all refuse a URL on the list.
 
 ### 10. Phase D per node pair (`verify.mjs`)
 
@@ -226,7 +264,7 @@ node run.mjs init --target <url> [--prefix /path] [--entry <url>]...
 node run.mjs explore --max-nodes 40 [--risky probe] [--allow-post <regex>] [--cdp http://127.0.0.1:9222] [--headed]
 node run.mjs status | tree | live | pending | frontier | route <id> | loops
 node run.mjs watch [--port 4777] [--dir d] [more dirs]           # streamed live tree, agents, blockers, replay
-node run.mjs requeue <id> | requeue --failed | requeue --gaps [--reason <text>] | gap <id> --reason "..."
+node run.mjs requeue <id> | requeue --failed | requeue --gaps [--reason <text>] | requeue --risky | gap <id> --reason "..."
 node run.mjs explore --dir <copy> --only-prefix /area ...       # one parallel worker per area
 node run.mjs explore ... --ws-guard block|off --retries 3 --login-pattern <regex> --widths off|1024,1280
 node run.mjs explore ... --keyboards <repo>/keyboards.json      # documented shortcuts on every template

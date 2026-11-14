@@ -12,14 +12,16 @@ export const TEMPLATE_THRESHOLD = 0.92;
 
 /** A node's lifecycle. `expanding` is transient: a crash leaves it there, load() requeues it. */
 export const STATUSES = ["frontier", "expanding", "closed", "built", "verified", "gap", "bounded"];
-export const EDGE_KINDS = ["click", "hover", "keyboard", "scroll", "redirect", "navigation", "write", "contextmenu", "dblclick", "key", "drag", "input", "submit", "upload"];
+export const EDGE_KINDS = ["click", "hover", "keyboard", "scroll", "redirect", "navigation", "write", "session-ending", "contextmenu", "dblclick", "key", "drag", "input", "submit", "upload"];
+/** Edge kinds no replay route may use: a write, and an opener whose target signs the session out. */
+export const NO_REPLAY = new Set(["write", "session-ending"]);
 
 /**
  * Replay cost per edge kind for shortest paths. A write is never part of a replay route:
  * reaching a state through someone else's write would dirty the reference.
  */
 export const EDGE_COST = {
-  redirect: 0, hover: 0.5, scroll: 0.5, click: 1, keyboard: 1, navigation: 1, write: Infinity,
+  redirect: 0, hover: 0.5, scroll: 0.5, click: 1, keyboard: 1, navigation: 1, write: Infinity, "session-ending": Infinity,
   // interaction kinds the walker fires besides a click (interactions.mjs); each replays from its
   // edge's element (a right-click, a key, a drag offset, the synthetic values typed, a fixture file)
   contextmenu: 1, dblclick: 1, key: 1, drag: 1.5, input: 1, submit: 1, upload: 2,
@@ -396,7 +398,7 @@ export class Graph {
    * Add an interaction. Deduped on (from, to, kind, element name); updates depth and in-degree.
    * `via` is the interaction a `write` edge was fired by when it was not a click (a submit, a drag).
    */
-  addEdge({ from, to, kind, element = {}, request = null, reversible = kind !== "write", via }) {
+  addEdge({ from, to, kind, element = {}, request = null, reversible = !NO_REPLAY.has(kind), via }) {
     if (!EDGE_KINDS.includes(kind)) throw new Error(`bad edge kind ${kind}`);
     this.node(from);
     this.node(to);
@@ -412,7 +414,7 @@ export class Graph {
       target.walkScopeBy = "parent";
       if (this.frontier.has(to)) this.frontier.update(to);
     }
-    if (kind !== "write") this.#relax(from);
+    if (!NO_REPLAY.has(kind)) this.#relax(from);
     const t = this.data.templates[target.template];
     if (t) {
       t.inDegree++;
@@ -429,7 +431,7 @@ export class Graph {
       const u = queue.shift();
       const d = this.data.nodes[u].depth + 1;
       for (const e of this.out.get(u) ?? []) {
-        if (e.kind === "write") continue;
+        if (NO_REPLAY.has(e.kind)) continue;
         const v = this.data.nodes[e.to];
         if (d < v.depth) {
           v.depth = d;
@@ -577,7 +579,7 @@ export class Graph {
   /** Groups of surfaces mutually reachable by navigation (loops); size-1 groups omitted. */
   loops() {
     const ids = Object.keys(this.data.nodes);
-    return stronglyConnected(ids, (u) => (this.out.get(u) ?? []).filter((e) => e.kind !== "write").map((e) => e.to)).filter((c) => c.length > 1);
+    return stronglyConnected(ids, (u) => (this.out.get(u) ?? []).filter((e) => !NO_REPLAY.has(e.kind)).map((e) => e.to)).filter((c) => c.length > 1);
   }
 
   // ---------- state ----------
@@ -639,7 +641,7 @@ export class Graph {
     const want = new Set(kinds);
     const picked = Object.values(this.data.nodes).filter((n) => want.has(n.kind) && (all || !n.contentKey) && n.status !== "gap");
     const ids = new Set(picked.map((n) => n.id));
-    for (const e of Object.values(this.data.edges)) if (ids.has(e.to) && e.kind !== "write" && this.data.nodes[e.from].status !== "gap") ids.add(e.from);
+    for (const e of Object.values(this.data.edges)) if (ids.has(e.to) && !NO_REPLAY.has(e.kind) && this.data.nodes[e.from].status !== "gap") ids.add(e.from);
     const out = [];
     for (const id of ids) {
       const n = this.data.nodes[id];
