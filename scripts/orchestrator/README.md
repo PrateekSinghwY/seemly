@@ -26,6 +26,7 @@ Site-agnostic: nothing here names a target. A build's data lives in its own
 
 | 9 | every interaction kind a first-class edge: right-click, double-click, documented shortcuts and keyboard activation, drag, form input and submit (empty, valid, one invalid value per constraint), uploads; Tab order per node; per-node invariant over every kind; verify's `interactions` check edge by edge. Hash routes in node identity; a scope-driven walk (`--scope-map --scope`, shallow out-of-scope, `--entries-from`); STATE_BOUND never bounds an entry or in-scope page | `interactions.mjs` `explore.mjs` `graph.mjs` `bound.mjs` `compare.mjs` `verify.mjs` `run.mjs` | done 2026-11-14 (`test/interactions` `test/verify-e2e`) |
 | 10 | pages pair across URL schemes: `--pair-map` (exact view keys, `:name` params, regexes on key, URL or route) on compare, verify and report; unmapped views by key, then a flagged fuzzy pair; each view's pairing source in pairs.json and the report. Write round trips read back by a read POST (`multi_read`) the request classifier confirms | `compare.mjs` `verify.mjs` `run.mjs` `../qa/roundtrip_lib.mjs` `../qa/write_roundtrip.mjs` | done 2026-11-14 (`test/pair-map` `test/roundtrip-post`) |
+| 11 | unscoped is not out of scope: only a node a rule put in another scope closes shallow; unscoped nodes are walked fully after in-scope ones; a coverage guard warns (or `--strict-scope` exits 4) when the map matches under half the entries or walked nodes; `status` counts unscoped and shallow; `requeue --shallow` | `graph.mjs` `explore.mjs` `run.mjs` | done 2026-11-15 (`test/scope-guard`) |
 
 Not done: the walker does not draw on a map or canvas (Chrome does, SKILL.md section 4);
 `graph.html` is regenerated per chunk (`watch` is the streamed view); workers share no graph file, so
@@ -72,6 +73,7 @@ two pages exist (one page cannot tell its shell from its own modules) and only s
 
 An **indexed binary heap**. Order, first key that differs wins:
 
+0. with a walk scope: in scope (or an entry) first, then unscoped, then out of scope;
 1. reachable without a write before only-through-a-write (writes last);
 2. entry nodes first;
 3. the template with the most in-edges (the most valuable to finish);
@@ -237,9 +239,18 @@ Write rows belong to `writes`; a shortcut declared `implemented: false` is liste
 `meta.hashRoutes` (set by the walker when a fragment-only change rebuilt the page) keeps any
 fragment. Families (`bound.mjs` `admit`) and views (`compare.mjs` `viewKey`) include the route.
 `g.setWalkScope({ rules, ids, expandOut })` (`--scope-map --scope`) puts in-scope nodes and
-entries first in the queue; a node's `walkScope` comes from the rules (path with and without
-the fragment), an overlay or state without a rule inherits its opener's. Out of scope and not
-an entry: captured and inventoried, every candidate `unfired: shallow`, `info.shallow`. `admitUrl`
+entries first in the queue, unscoped nodes next, out-of-scope nodes last; a node's `walkScope`
+comes from the rules (path with and without the fragment), an overlay or state without a rule
+inherits its opener's. Three states, never confused: **in** (`g.inWalk`), **unscoped** (no rule
+matched, `walkScope` null: walked fully), **out** (`g.outOfWalk`: a rule tagged it with a scope not
+in `--scope`). Only out and not an entry: captured and inventoried, every candidate
+`unfired: shallow`, `info.shallow`. Coverage guard (`g.scopeCoverage()`, explore.mjs
+`scopeGuard`): at start (before a browser opens), every `SCOPE_CHUNK` (20) nodes and at the end,
+fewer than half of the entry pages or of the nodes walked so far carrying any walk scope prints
+`WARNING: scope map matches N of M ...; is it written for this site's URLs?`; `strictScope`
+(`--strict-scope`) throws `ScopeCoverageError` and `run.mjs` exits 4. `g.walkCounts()` feeds
+status's `WALK` line (in / unscoped / out / shallow) and the `CLOSED (N closed shallow)` note;
+`g.requeueShallow()` (`requeue --shallow`) puts every shallow node back on the frontier. `admitUrl`
 never bounds an entry or an in-scope URL, and a walk re-opens any such node an earlier walk
 bounded (`g.reread` replaces its placeholder skeleton). `--entries-from` (`readEntriesFile`)
 seeds entries.
@@ -264,11 +275,11 @@ node run.mjs init --target <url> [--prefix /path] [--entry <url>]...
 node run.mjs explore --max-nodes 40 [--risky probe] [--allow-post <regex>] [--cdp http://127.0.0.1:9222] [--headed]
 node run.mjs status | tree | live | pending | frontier | route <id> | loops
 node run.mjs watch [--port 4777] [--dir d] [more dirs]           # streamed live tree, agents, blockers, replay
-node run.mjs requeue <id> | requeue --failed | requeue --gaps [--reason <text>] | requeue --risky | gap <id> --reason "..."
+node run.mjs requeue <id> | requeue --failed | requeue --gaps [--reason <text>] | requeue --risky | requeue --shallow | gap <id> --reason "..."
 node run.mjs explore --dir <copy> --only-prefix /area ...       # one parallel worker per area
 node run.mjs explore ... --ws-guard block|off --retries 3 --login-pattern <regex> --widths off|1024,1280
 node run.mjs explore ... --keyboards <repo>/keyboards.json      # documented shortcuts on every template
-node run.mjs explore ... --scope-map scope.json --scope S01,S02 [--expand-out] [--entries-from entries.txt]
+node run.mjs explore ... --scope-map scope.json --scope S01,S02 [--expand-out] [--strict-scope] [--entries-from entries.txt]
 node run.mjs scope --map scope.json                             # tag nodes by component
 node run.mjs status --scope S01 | tree --scope S01              # per scope
 node run.mjs compare --ref <dirs> --clone <dirs> [--scope S01] [--pair-map pair-map.json] --out diff.md   # + <clone>/pairs.json

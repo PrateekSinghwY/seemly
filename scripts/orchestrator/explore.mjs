@@ -67,6 +67,10 @@ export class NeverOpenError extends Error {}
 export class TransientError extends Error {}
 /** A node whose elements are not all accounted for: it must not close. */
 export class InvariantError extends Error {}
+/** `--strict-scope`: the scope map matches too little of this site (run.mjs exits 4). */
+export class ScopeCoverageError extends Error {}
+/** Nodes walked between two scope-coverage checks. */
+export const SCOPE_CHUNK = 20;
 
 /** Sign-in pages and identity hosts. `--login-pattern` overrides it for an unusual login URL. */
 export const LOGIN_URL = /(^https?:\/\/(login|auth|sso|idp|signin|accounts)[.-])|\/(login|log-in|signin|sign-in|sign_in|logon|authn?|sso|saml2?|oauth2?|openid|adfs|cas|idp)(\/|\?|#|\.|$)/i;
@@ -168,13 +172,32 @@ export async function explore(g, dir, opts = {}) {
   const {
     maxNodes = Infinity, risky = "record", allowPost = [], readPosts = "off", pace = 0, sample = SAMPLE, onlyPrefix = null,
     retries = RETRIES, backoffMs = BACKOFF_MS, loginPattern = null, wsGuard = "block", widths = DEFAULT_WIDTHS, log = (s) => console.error(s),
-    keyboards = null, walkScope = null, entries = [], interactions = true, stateBound = STATE_BOUND,
+    keyboards = null, walkScope = null, entries = [], interactions = true, stateBound = STATE_BOUND, strictScope = false,
   } = opts;
   // Documented shortcuts (a keyboards.json path or its parsed document), fired on every template.
   const shortcuts = keyboards ? readShortcuts(typeof keyboards === "string" ? JSON.parse(readFileSync(keyboards, "utf8")) : keyboards) : null;
   // Writes allowed (the clone, walked with --allow-post): file inputs get real uploads.
   const writesAllowed = allowPost.length > 0;
   if (walkScope) g.setWalkScope(walkScope);
+  // The scope map must be written for this site's URLs: a map that matches almost nothing would
+  // leave every node unscoped. Checked at start (before a browser opens), after every chunk of
+  // SCOPE_CHUNK nodes and at the end; `strictScope` turns the warning into ScopeCoverageError.
+  const warned = new Set();
+  const scopeGuard = () => {
+    const c = g.scopeCoverage();
+    if (!c) return;
+    for (const [what, t] of [["entry pages", c.entries], ["nodes walked so far", c.walked]]) {
+      if (!t.total || t.matched * 2 >= t.total) continue;
+      const msg = `scope map matches ${t.matched} of ${t.total} ${what}; is it written for this site's URLs?`;
+      if (!warned.has(msg)) {
+        warned.add(msg);
+        log(`WARNING: ${msg}`);
+        g.signal("walker.warning", { reason: msg });
+      }
+      if (strictScope) throw new ScopeCoverageError(msg);
+    }
+  };
+  scopeGuard();
   const entryUrls = () => new Set(Object.values(g.data.nodes).filter((n) => n.entry).map((n) => n.url));
   // A bound never holds an entry page or an in-scope page: put back any an earlier walk bounded.
   for (const n of Object.values(g.data.nodes)) {
@@ -968,9 +991,11 @@ export async function explore(g, dir, opts = {}) {
     g.annotate(n.id, { title: r.title, heading: r.heading, interactive: r.candidates.length, artifacts: rel, scope: scopeCss, overflowX: r.overflowX, wsCalls: wsReads.length || undefined });
     g.rescope(n.id);
 
-    // Outside the walk's scope (--scope, without --expand-out): recorded, not expanded. An entry
+    // Out of the walk's scope (--scope, without --expand-out): recorded, not expanded. An entry
     // page is always expanded: it is where the in-scope pages are found.
-    if (g.data.meta.walkScope && !g.inWalk(n) && !g.data.meta.walkScope.expandOut && !n.entry) {
+    // Only a node a rule explicitly put in another scope: an unscoped node (no rule matched) is
+    // walked fully, so a map written for another site's URLs cannot close the graph unwalked.
+    if (g.outOfWalk(n) && !g.data.meta.walkScope.expandOut && !n.entry) {
       const rows = r.candidates.map((c) => unfired({ role: c.role, name: c.name, css: c.css, href: c.href }, "shallow"));
       writeFileSync(join(art, "inventory.json"), JSON.stringify({ id: n.id, url: n.url, state: n.state, kind: n.kind, title: r.title, requests, wsReads, candidates: rows, interactions: [], shallow: true, invariant: "ok" }, null, 1));
       g.annotate(n.id, { shallow: true, candidateKeys: [] });
@@ -1154,6 +1179,7 @@ export async function explore(g, dir, opts = {}) {
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
   try {
+    scopeGuard();
     while (done < maxNodes && !stopping) {
       const n = g.next();
       if (!n) break;
@@ -1242,7 +1268,9 @@ export async function explore(g, dir, opts = {}) {
       }
       save(g, dir);
       done++;
+      if (done % SCOPE_CHUNK === 0) scopeGuard();
     }
+    scopeGuard();
   } finally {
     g.signal("walker.done", { stopped: stopping, frontier: g.frontier.size });
     for (const id of deferred) g.setStatus(id, "frontier");

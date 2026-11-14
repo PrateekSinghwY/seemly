@@ -374,6 +374,57 @@ export class Graph {
     return !ws || ws.ids.includes(n.walkScope);
   }
 
+  /**
+   * Explicitly out of the walk's scope: a rule tagged it with a scope not in `--scope`. Only these
+   * are closed shallowly. A node no rule matched is "unscoped" and walked fully: a map written for
+   * another site's URLs must not silently close the whole graph unwalked.
+   */
+  outOfWalk(n) {
+    const ws = this.data.meta.walkScope;
+    return !!ws && n.walkScope != null && !ws.ids.includes(n.walkScope);
+  }
+
+  /** Walk-scope tally: in / unscoped / out of scope, and how many nodes were closed shallowly. */
+  walkCounts() {
+    const ws = this.data.meta.walkScope;
+    const out = { in: 0, unscoped: 0, out: 0, shallow: 0 };
+    for (const n of Object.values(this.data.nodes)) {
+      if (n.info?.shallow && n.status === "closed") out.shallow++;
+      if (!ws || n.status === "gap") continue;
+      if (n.walkScope == null) out.unscoped++;
+      else if (ws.ids.includes(n.walkScope)) out.in++;
+      else out.out++;
+    }
+    return out;
+  }
+
+  /**
+   * How much of the graph the walk's scope map matches: entry pages, and nodes walked so far
+   * (closed). A node matches when it carries any walk scope (its own rule or its opener's).
+   * Gaps (off-origin, failed) are left out. Null when the walk has no scope map.
+   */
+  scopeCoverage() {
+    const ws = this.data.meta.walkScope;
+    if (!ws) return null;
+    const live = Object.values(this.data.nodes).filter((n) => n.status !== "gap");
+    const tally = (ns) => ({ matched: ns.filter((n) => n.walkScope != null).length, total: ns.length });
+    return { entries: tally(live.filter((n) => n.entry)), walked: tally(live.filter((n) => n.status === "closed")) };
+  }
+
+  /** Every node closed shallowly (out of the walk's scope) back on the frontier for a full walk. */
+  requeueShallow() {
+    const out = [];
+    for (const n of Object.values(this.data.nodes)) {
+      if (!n.info?.shallow) continue;
+      delete n.info.shallow;
+      delete n.info.candidateKeys;
+      n.attempts = 0;
+      this.setStatus(n.id, "frontier", null);
+      out.push(n);
+    }
+    return out;
+  }
+
   /** Nodes on one canonical URL, to match a state against ones already seen there. */
   nodesAt(url) {
     const c = this.canon(url);
@@ -505,7 +556,8 @@ export class Graph {
   // ---------- the queue ----------
 
   /**
-   * Frontier order (reference/graph.md "Priority"): with a walk scope, in-scope nodes first; nodes reached only through writes last;
+   * Frontier order (reference/graph.md "Priority"): with a walk scope, in-scope nodes first, then
+   * unscoped ones (no rule matched), out-of-scope ones last; nodes reached only through writes last;
    * entry nodes first; then the template with the most in-edges; then shallower; then the
    * one with fewer interactive elements (closes faster); id last so ties are stable.
    */
@@ -513,7 +565,8 @@ export class Graph {
     const x = this.data.nodes[a];
     const y = this.data.nodes[b];
     const k = (n) => [
-      this.inWalk(n) || n.entry ? 0 : 1, // an entry page is where in-scope pages are found
+      // in scope (or an entry page: where in-scope pages are found), then unscoped, then out of scope
+      this.inWalk(n) || n.entry ? 0 : this.outOfWalk(n) ? 2 : 1,
       this.#writeOnly(n) ? 1 : 0,
       n.entry ? 0 : 1,
       -(this.data.templates[n.template]?.inDegree ?? 0),

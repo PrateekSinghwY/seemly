@@ -9,11 +9,14 @@
 //             [--ws-guard block|off] [--retries N] [--backoff-ms N] [--login-pattern <regex>]
 //             [--widths 1024,1280,...|off]                         label widths saved per node for verify
 //             [--keyboards keyboards.json]                         documented shortcuts, fired on every template
-//             [--scope-map scope.json --scope S01,S02 [--expand-out]]  in-scope nodes first; the rest closed shallowly
+//             [--scope-map scope.json --scope S01,S02 [--expand-out]]  in-scope nodes first, then unscoped (no rule
+//                                                                  matched, walked fully); other scopes closed shallowly
+//             [--strict-scope]                                     exit 4 when the map matches < 50% of entries or walked nodes
 //             [--entries-from <file>]                              entry pages: one URL per line, or a JSON list / route map
 //             [--no-interactions]                                  clicks only (no right-click, keys, drags, forms, uploads)
 //     visit <url>                                                  add one more entry page
 //     requeue <nodeId> | requeue --failed | requeue --gaps [--reason <r>] | requeue --kind overlay,modal,menu,state | requeue --risky
+//             | requeue --shallow                                 every node closed shallowly back on the frontier for a full walk
 //     gap <nodeId> --reason "..."                                  corrections; --gaps puts back every gap with a retryable reason
 //                                                                  (and write-only nodes whose writes were page-load reads);
 //                                                                  --risky puts back every node with an element held by a name
@@ -111,6 +114,8 @@ const { values: o, positionals } = parseArgs({
     keyboards: { type: "string" },
     "scope-map": { type: "string" },
     "expand-out": { type: "boolean", default: false },
+    "strict-scope": { type: "boolean", default: false },
+    shallow: { type: "boolean", default: false },
     "entries-from": { type: "string" },
     "no-interactions": { type: "boolean", default: false },
   },
@@ -141,7 +146,11 @@ function status(g, scope) {
   if (scope) say(`SCOPE   ${scope}`);
   say(`GRAPH   ${s.nodes} nodes, ${s.edges} edges, ${s.templates} templates, ${s.modules} module archetypes`);
   say(`STATUS  ${Object.entries(s.byStatus).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(" · ")}`);
-  say(`QUEUE   frontier ${s.frontier}${!scope && g.isClosed() ? " · CLOSED" : ""}${pend ? ` · ${pend} write(s) pending BLOCKED` : ""}`);
+  const wc = g.walkCounts();
+  say(`QUEUE   frontier ${s.frontier}${!scope && g.isClosed() ? ` · CLOSED${wc.shallow ? ` (${wc.shallow} closed shallow, not walked)` : ""}` : ""}${pend ? ` · ${pend} write(s) pending BLOCKED` : ""}`);
+  // A shallow-closed node was inventoried, never fired: never let it pass for a walked one.
+  const ws = g.data.meta.walkScope;
+  if ((ws || wc.shallow) && !scope) say(`WALK    ${ws ? `scope ${ws.ids.join(",")} · in ${wc.in} · unscoped ${wc.unscoped} · out ${wc.out} · ` : ""}shallow ${wc.shallow}`);
   if (pr) say(`BUILD   ${pr.units} units: ${UNITS(pr)}`);
   // Phase D counts come from pairs.json, the clone graph and the check records on disk.
   const vdir = o.clone?.[0] ?? dir;
@@ -186,6 +195,7 @@ function walkerOptions() {
   if (o["scope-map"] !== undefined) {
     if (!o.scope) throw new Error("--scope-map needs --scope <id,...>");
     out.walkScope = { rules: JSON.parse(readFileSync(o["scope-map"], "utf8")).rules ?? [], ids: o.scope.split(",").map((x) => x.trim()).filter(Boolean), expandOut: o["expand-out"] };
+    if (o["strict-scope"]) out.strictScope = true;
   }
   if (o["entries-from"] !== undefined) out.entries = walker.readEntriesFile(readFileSync(o["entries-from"], "utf8"), g.data.meta.origin ?? o.target);
   return out;
@@ -199,7 +209,7 @@ const WALKS = new Set(["init", "visit", "explore"]);
 let walker = {};
 if (WALKS.has(cmd)) walker = await import("./explore.mjs");
 else if (cmd === "requeue") walker = await import("./explore.mjs").catch((e) => (say(`note: explore.mjs did not load (${e.message.split("\n")[0]}); using the graph's retry rule`), {}));
-const { SessionLost, explore, readEntry } = walker;
+const { SessionLost, ScopeCoverageError, explore, readEntry } = walker;
 
 // The watch view reads files only: it needs no graph, no walker, no browser.
 if (cmd === "watch") {
@@ -260,6 +270,13 @@ switch (cmd) {
         status(g);
         break;
       } catch (e) {
+        if (ScopeCoverageError && e instanceof ScopeCoverageError) {
+          writeTree(g, dir);
+          say(`STOPPED (--strict-scope): ${e.message}`);
+          status(g);
+          process.exitCode = 4;
+          break;
+        }
         if (!(e instanceof SessionLost)) throw e;
         writeTree(g, dir);
         if (!waitMin || !stateFile || !existsSync(stateFile)) {
@@ -304,6 +321,14 @@ switch (cmd) {
       save(g, dir);
       for (const n of r.nodes) say(`requeued ${n.id} ${n.label}`);
       say(`requeued ${r.nodes.length} node(s): ${r.refire} of ${r.skipped} element(s) skipped as risky are fired under the current rule; ${r.dropped} risky-name row(s) dropped from pending-writes.jsonl`);
+      break;
+    }
+    // --shallow: every node closed shallowly (inventoried, nothing fired) back on the frontier.
+    if (o.shallow) {
+      const done = g.requeueShallow();
+      save(g, dir);
+      for (const n of done) say(`requeued ${n.id} ${n.label}`);
+      say(`requeued ${done.length} shallow node(s) for a full walk`);
       break;
     }
     // --kind: nodes of those kinds with no content key (an older graph merged look-alike overlays),

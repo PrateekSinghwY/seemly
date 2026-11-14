@@ -387,10 +387,20 @@ What the walker guarantees per node (`explore.mjs`, each with a test in `test/wa
   of node identity, replayed by URL; a plain fragment joins identity once a fragment-only change
   rebuilt the page (`meta.hashRoutes`). Old nodes without a fragment load unchanged.
 - **A scope-driven walk.** `O explore --scope-map scope.json --scope S01,S02` walks in-scope
-  nodes first and closes out-of-scope ones shallowly (captured and inventoried, not expanded)
-  unless `--expand-out`; `--entries-from <file>` seeds entry pages (one URL per line, or a JSON
-  list or route map). STATE_BOUND never bounds an entry or an in-scope page; it only samples
-  repeated row siblings.
+  nodes first, then **unscoped** ones (no rule matched: walked fully), and closes only
+  **out-of-scope** ones (a rule tagged them with a scope not in `--scope`) shallowly (captured and
+  inventoried, not expanded) unless `--expand-out`; `--entries-from <file>` seeds entry pages (one
+  URL per line, or a JSON list or route map). STATE_BOUND never bounds an entry or an in-scope
+  page; it only samples repeated row siblings.
+- **The map must fit this site's URLs.** A map written for another URL scheme (the clone's routes
+  on a reference walk) matches nothing; before the fix every node then closed shallow in seconds
+  ("opened 0") and status read a closed graph that was never walked. At start, every 20 nodes and
+  at the end, the walker prints `WARNING: scope map matches N of M entry pages|nodes walked so
+  far; is it written for this site's URLs?` when fewer than half match; `--strict-scope` exits 4
+  instead. `status` prints `WALK scope … · in N · unscoped N · out N · shallow N` and `CLOSED (N
+  closed shallow, not walked)`: a shallow count is unwalked surface, never coverage.
+  `O requeue --shallow` puts every shallow-closed node back on the frontier for a full walk (fix
+  the map or pass `--expand-out` first, or an out-of-scope node closes shallow again).
 
 **Scope, verify, report.** `O scope --map scope.json` tags every node with a component id from
 ordered rules (URL, title, heading, breadcrumb, label, kind, template; first match wins, then
