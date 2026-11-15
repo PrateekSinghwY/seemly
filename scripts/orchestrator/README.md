@@ -27,6 +27,7 @@ Site-agnostic: nothing here names a target. A build's data lives in its own
 | 9 | every interaction kind a first-class edge: right-click, double-click, documented shortcuts and keyboard activation, drag, form input and submit (empty, valid, one invalid value per constraint), uploads; Tab order per node; per-node invariant over every kind; verify's `interactions` check edge by edge. Hash routes in node identity; a scope-driven walk (`--scope-map --scope`, shallow out-of-scope, `--entries-from`); STATE_BOUND never bounds an entry or in-scope page | `interactions.mjs` `explore.mjs` `graph.mjs` `bound.mjs` `compare.mjs` `verify.mjs` `run.mjs` | done 2026-11-14 (`test/interactions` `test/verify-e2e`) |
 | 10 | pages pair across URL schemes: `--pair-map` (exact view keys, `:name` params, regexes on key, URL or route) on compare, verify and report; unmapped views by key, then a flagged fuzzy pair; each view's pairing source in pairs.json and the report. Write round trips read back by a read POST (`multi_read`) the request classifier confirms | `compare.mjs` `verify.mjs` `run.mjs` `../qa/roundtrip_lib.mjs` `../qa/write_roundtrip.mjs` | done 2026-11-14 (`test/pair-map` `test/roundtrip-post`) |
 | 11 | unscoped is not out of scope: only a node a rule put in another scope closes shallow; unscoped nodes are walked fully after in-scope ones; a coverage guard warns (or `--strict-scope` exits 4) when the map matches under half the entries or walked nodes; `status` counts unscoped and shallow; `requeue --shallow` | `graph.mjs` `explore.mjs` `run.mjs` | done 2026-11-15 (`test/scope-guard`) |
+| 12 | `supervise`: explore chunks to frontier 0, status per chunk in `supervise.log`; on exit 3 prints `WAITING FOR SIGN-IN since <time>`, polls the human's window (`export-login.mjs`), proves the login with a headless page (`sessionState`; cookie count only a pre-check), saves it, `requeue --gaps`, resumes; exit 4 stops, another failure retries once, three chunks closing nothing stop as stalled (exit 5). No `--workers`: `store.mjs` has one writer per graph dir | `supervise.mjs` `run.mjs` `test/fixture/site.mjs` | done 2026-11-15 (`test/supervise`) |
 
 Not done: the walker does not draw on a map or canvas (Chrome does, SKILL.md section 4);
 `graph.html` is regenerated per chunk (`watch` is the streamed view); workers share no graph file, so
@@ -272,11 +273,13 @@ The commands SKILL.md runs, from the clone repo's root (`RL_REPO` overrides):
 
 ```bash
 node run.mjs init --target <url> [--prefix /path] [--entry <url>]...
+node run.mjs supervise --max-nodes 40 [explore flags] [--poll 30] [--min-cookies 1] [--max-wait <min>] \
+  [--state <file>] [--login-cdp http://127.0.0.1:9222] [--domain <site>] [--check-url <url>]   # the walk (below)
 node run.mjs explore --max-nodes 40 [--risky probe] [--allow-post <regex>] [--cdp http://127.0.0.1:9222] [--headed]
 node run.mjs status | tree | live | pending | frontier | route <id> | loops
 node run.mjs watch [--port 4777] [--dir d] [more dirs]           # streamed live tree, agents, blockers, replay
 node run.mjs requeue <id> | requeue --failed | requeue --gaps [--reason <text>] | requeue --risky | requeue --shallow | gap <id> --reason "..."
-node run.mjs explore --dir <copy> --only-prefix /area ...       # one parallel worker per area
+node run.mjs supervise --dir <copy> --only-prefix /area ...     # one parallel worker per area
 node run.mjs explore ... --ws-guard block|off --retries 3 --login-pattern <regex> --widths off|1024,1280
 node run.mjs explore ... --keyboards <repo>/keyboards.json      # documented shortcuts on every template
 node run.mjs explore ... --scope-map scope.json --scope S01,S02 [--expand-out] [--strict-scope] [--entries-from entries.txt]

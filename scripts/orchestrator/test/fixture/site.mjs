@@ -9,7 +9,8 @@
 //            URL or body names as reads, a telemetry beacon, a real write, and a websocket RPC
 //            that reads on load and writes on a click
 //   /flaky/  a page that answers 503 three times before it works, and one that never does
-//   /sess/   a control that ends the session; every page after it redirects to /login
+//   /sess/   a control that ends the session; every page after it redirects to /login, until a
+//            browser signs in again at /sess/api/login (sets a `sess` cookie the server accepts)
 //   /kit/    every interaction kind besides a click (`kitBody`, shared with pair.mjs): a
 //            right-click glance, a double-click panel, a drag handle, a documented shortcut
 //            (alt+m), a form with a required and a pattern field, a file input
@@ -287,7 +288,7 @@ export function acceptWs(req, socket, onText) {
 }
 
 export function start() {
-  const hits = { logout: 0, writes: [], ws: [], flaky: 0, loggedOut: false, expired: false, admin: [], forecast: 0, outLoggedOut: false };
+  const hits = { logout: 0, writes: [], ws: [], flaky: 0, loggedOut: false, expired: false, token: null, admin: [], forecast: 0, outLoggedOut: false };
   const server = createServer((req, res) => {
     const url = new URL(req.url, "http://x");
     if (req.method !== "GET") hits.writes.push(`${req.method} ${url.pathname}`);
@@ -306,7 +307,13 @@ export function start() {
         if (!hits.expired) hits.loggedOut = hits.expired = true;
         return json({});
       }
-      if (hits.loggedOut) {
+      if (url.pathname === "/sess/api/login") {
+        hits.token = `t${Date.now().toString(36)}`;
+        res.writeHead(200, { "content-type": "text/html", "set-cookie": `sess=${hits.token}; Path=/` });
+        return res.end(plain("Signed in", "<h1>Signed in</h1>"));
+      }
+      const cookie = /(?:^|;\s*)sess=([^;]+)/.exec(req.headers.cookie ?? "")?.[1];
+      if (hits.loggedOut && !(hits.token && cookie === hits.token)) {
         res.writeHead(302, { location: `/login?next=${encodeURIComponent(url.pathname)}` });
         return res.end();
       }

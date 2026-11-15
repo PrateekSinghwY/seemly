@@ -14,6 +14,10 @@
 //             [--strict-scope]                                     exit 4 when the map matches < 50% of entries or walked nodes
 //             [--entries-from <file>]                              entry pages: one URL per line, or a JSON list / route map
 //             [--no-interactions]                                  clicks only (no right-click, keys, drags, forms, uploads)
+//     supervise [explore flags] [--chunk N] [--poll 30] [--min-cookies 1] [--max-wait <min>] [--state <file>]
+//               [--login-cdp <url>] [--domain <site>] [--check-url <url>]
+//                                     explore in chunks to frontier 0; on a lost login waits, re-exports the
+//                                     login once a headless page proves it, requeues gaps, resumes (supervise.mjs)
 //     visit <url>                                                  add one more entry page
 //     requeue <nodeId> | requeue --failed | requeue --gaps [--reason <r>] | requeue --kind overlay,modal,menu,state | requeue --risky
 //             | requeue --shallow                                 every node closed shallowly back on the frontier for a full walk
@@ -58,6 +62,8 @@ import { writeLive, writeTree } from "./views.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 const skill = dirname(dirname(here));
 const cmd = process.argv[2];
+// supervise owns its flags and passes the rest to explore, so it runs before this file's parser.
+if (cmd === "supervise") process.exit(await (await import("./supervise.mjs")).main(process.argv.slice(3)));
 // `requeue --risky` takes no value, while `explore --risky record|probe` does.
 const argv = process.argv.slice(2).map((a, i, all) => (cmd === "requeue" && a === "--risky" && (all[i + 1] === undefined || all[i + 1].startsWith("--")) ? "--risky=requeue" : a));
 const { values: o, positionals } = parseArgs({

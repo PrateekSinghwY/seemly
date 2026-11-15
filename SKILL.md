@@ -279,7 +279,8 @@ for STATUS, PAGE COMPLETE and the scorecard. `O` below is
 
 ```bash
 O init --target <url> [--prefix /path] [--entry <url>]...   # entry pages, read in the persistent profile
-O explore --max-nodes 40                                      # one chunk; repeat until it prints CLOSED
+O supervise --max-nodes 40 [explore flags]                    # the walk: explore chunks to frontier 0, survives a lost login
+O explore --max-nodes 40                                      # one chunk by hand (supervise runs these)
 O status    O tree    O live    O pending    O route <node>   # STATUS, tree.md, graph.html, writes waiting
 O watch [--port 4777] [<more discovery dirs>]                 # live tree in the browser (below)
 ```
@@ -292,8 +293,20 @@ errors, loses its login, or goes 90 s silent. A finished run opens as a replay w
 Name every process: `--agent "walker /area"` on each parallel `explore`, `--agent builder-N` on
 `next-unit` / `unit-done` / `unit-blocked` from each builder, so the view shows who is where.
 
-Run `explore` with `run_in_background` and keep building while it walks; each chunk saves the
-graph, so a crash or a checkpoint loses nothing. How to run it well, learned on a full audit:
+**The walk always runs under `O supervise`**, with `run_in_background`, and you keep building
+while it walks. It runs `explore` chunks until the frontier is 0, each chunk's status in
+`<dir>/supervise.log`, so a crash or a checkpoint loses nothing. When the login expires (explore
+exit 3) it prints `WAITING FOR SIGN-IN since <time>` to stdout and the log: tell the human to sign
+in again in the headed window, nothing more. Every `--poll` seconds (default 30) it copies the login
+out of that window (`export-login.mjs`, `--login-cdp <url>`, `--domain <site>`), proves it with a
+headless page that must reach the entry URL without landing on a sign-in page (`--min-cookies` is
+only a pre-check), saves it to `SEEMLY_STORAGE_STATE`, runs `requeue --gaps` and resumes. It never
+types credentials. Exit 4 (scope coverage) stops it; any other failure is retried once, then stops
+with the reason; three chunks in a row that close no node stop it as `stalled` (exit 5). A walk
+that stopped with exit 3 and sat waiting for a human to notice is the defect this exists for
+(2026-11-15). There is no `--workers`: `store.mjs` rewrites `graph.json` whole with no lock or
+merge, so parallel walks stay one supervise per dir copy (below). How to run it well, learned on a
+full audit:
 
 - **Logged-in reference:** the human logs in once in a headed window (`--remote-debugging-port`);
   copy that login out with `node <skill>/scripts/lib/export-login.mjs --cdp <port url> --domain
@@ -302,7 +315,7 @@ graph, so a crash or a checkpoint loses nothing. How to run it well, learned on 
   one window over CDP: a site's service worker trips a Playwright assertion in every attached
   client and kills it.
 - **Parallel workers:** copy `graph.json` into one dir per area and run
-  `O explore --dir <copy> --only-prefix /area ...` per worker; each walks only its area.
+  `O supervise --dir <copy> --only-prefix /area ...` per worker; each walks only its area.
 - **Stop and recover:** a SIGTERM stops a walk cleanly (the node in hand goes back on the
   frontier). If a walk ever died with its browser, `O requeue --failed` restores its give-ups.
   Nodes reachable only through a write close as `bounded`, not as failures.
@@ -348,8 +361,9 @@ What the walker guarantees per node (`explore.mjs`, each with a test in `test/wa
   (a money, messaging or deletion name, held unclicked) or `write-verb` (a Save-like name that
   sent nothing: a next step to capture once).
 - **Session loss stops the run.** A sign-in page or a session-ended notice mid-walk throws
-  `SessionLost`: the node goes back on the frontier and `explore` exits 3 (`BLOCKED`, or waits
-  for a new login with `--relogin-wait`). A route that signed the session out (`SessionEnding`)
+  `SessionLost`: the node goes back on the frontier and `explore` exits 3; `O supervise` then
+  waits for the sign-in, re-exports and resumes on its own (`--relogin-wait` only waits for the
+  file to change and is ignored under supervise). A route that signed the session out (`SessionEnding`)
   is also put in `never-open.jsonl` and never opened again. A transient error (5xx, 429, a "service unavailable"
   page, a timeout) is retried with doubling backoff (`--retries`, `--backoff-ms`). A node given up
   on carries `gapReason: { code, retryable, message }` (`transient`, `replay-not-found`,

@@ -376,7 +376,7 @@ transfers to the real app's UI and API shapes.
 
 ```bash
 node scripts/orchestrator/run.mjs init --target https://tasks.example.com
-node scripts/orchestrator/run.mjs explore --max-nodes 40      # graph 1
+node scripts/orchestrator/run.mjs supervise --max-nodes 40    # graph 1: explore chunks to frontier 0, waits out a lost login
 node scripts/orchestrator/run.mjs status | tree | frontier | route <id> | loops
 node scripts/orchestrator/run.mjs plan                         # graph 2
 node scripts/orchestrator/run.mjs next-unit                    # one unit + packet

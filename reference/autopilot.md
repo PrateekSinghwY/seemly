@@ -28,8 +28,13 @@ corrections. Then pick the start:
 ## 2. Walk the reference to CLOSED (tool: Playwright, through the orchestrator)
 
 - **Gaps first:** `O requeue --gaps`.
-- **Then the walk:** `O explore` in the background, with one worker per scope or prefix in
-  parallel.
+- **Then the walk:** `O supervise` (explore's flags) in the background, with one worker per scope
+  or prefix in parallel, each on its own dir copy (the graph store takes one writer). It runs
+  explore chunks to frontier 0; on a lost login it prints `WAITING FOR SIGN-IN since <time>`
+  (relay it to the human), polls the headed window every `--poll` seconds, re-exports the login
+  once a headless page proves it, runs `requeue --gaps` and resumes by itself. It stops on exit 4
+  (scope coverage), a failure that repeats, or three chunks that close nothing (`stalled`).
+  Every chunk's status is in `<dir>/supervise.log`.
 - **Every interaction kind is fired:** click, right-click, double-click, hover, keys, drag, forms,
   uploads.
 - **Each node saves:** screenshot, DOM, AX tree, HTTP and websocket reads, styles, widths.
