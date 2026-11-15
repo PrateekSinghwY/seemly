@@ -154,3 +154,35 @@ test("supervise: --no-login is a bare flag and takes no value", () => {
   assert.equal(own["no-login"], true);
   assert.deepEqual(pass, ["--dir", "x", "--allow-post", ".*"]);
 });
+
+import { nudgeSignIn } from "../supervise.mjs";
+// A stand-in page: the nudge opens the URL, presses a credential-free sign-in button, and never
+// touches a page that still wants a password.
+function fakePage({ buttons = [], emptyPassword = false }) {
+  const log = [];
+  return {
+    log,
+    goto: async (u) => log.push(`goto ${u}`),
+    waitForTimeout: async () => {},
+    $$eval: async () => emptyPassword,
+    $$: async () => buttons.map((label) => ({
+      innerText: async () => label,
+      getAttribute: async () => null,
+      isVisible: async () => true,
+      click: async () => log.push(`click ${label}`),
+    })),
+  };
+}
+test("nudge: opens the check URL and presses a lone Sign in button", async () => {
+  const p = fakePage({ buttons: ["Help", "Sign In"] });
+  assert.equal(await nudgeSignIn(p, "https://x.example/home", { settleMs: 0 }), 'opened; pressed "Sign In"');
+  assert.deepEqual(p.log, ["goto https://x.example/home", "click Sign In"]);
+});
+test("nudge: a page with an empty password field is left to the human; nothing is clicked", async () => {
+  const p = fakePage({ buttons: ["Sign In"], emptyPassword: true });
+  assert.match(await nudgeSignIn(p, "https://x.example/home", { settleMs: 0 }), /password needed/);
+  assert.deepEqual(p.log, ["goto https://x.example/home"]);
+});
+test("nudge: --no-nudge is a bare flag", () => {
+  assert.equal(parseSupervise(["--no-nudge", "--dir", "d"]).own["no-nudge"], true);
+});

@@ -10,6 +10,10 @@
 // storage state must reach the entry URL without landing on a sign-in page (page-probe
 // sessionState). The cookie count (--min-cookies) is only a pre-check. A proven login replaces
 // the storage-state file, `requeue --gaps` runs, and the walk resumes. It never types credentials.
+// Before each poll it nudges the window (nudgeSignIn): it opens --check-url there, which renews an
+// SSO session that is still valid, and presses a lone "Sign in" / "Log in" / "Continue" button
+// when no empty password field is on the page. A page that wants a password still waits for the
+// human. --no-nudge turns this off.
 //
 // Exits: 0 frontier empty · 3 no sign-in within --max-wait · 4 scope coverage (explore's exit 4)
 //        5 stalled (three chunks in a row closed no node) · any other code an explore failed with twice.
@@ -41,7 +45,7 @@ export function parse(argv) {
   const pass = [];
   for (let i = 0; i < argv.length; i++) {
     const m = /^--([^=]+)(?:=(.*))?$/.exec(argv[i]);
-    if (m && m[1] === "no-login") own["no-login"] = true;
+    if (m && (m[1] === "no-login" || m[1] === "no-nudge")) own[m[1]] = true;
     else if (m && OWN[m[1]]) own[m[1]] = m[2] ?? argv[++i];
     else pass.push(argv[i]);
   }
@@ -155,6 +159,39 @@ export async function supervise({ dir, runChunk, waitForLogin, requeue, log, sta
   }
 }
 
+const SIGN_IN = /^\s*(sign\s*in|log\s*in|login|continue)(\s+again)?\s*$/i;
+
+// One nudge on the human's window: open the check URL, then press a credential-free sign-in
+// button if one is there. Returns what it did, for the log. Never fills any field.
+export async function nudgeSignIn(page, url, { settleMs = 8000 } = {}) {
+  await page.goto(url, { waitUntil: "domcontentloaded" }).catch(() => {});
+  await page.waitForTimeout(settleMs);
+  const emptyPassword = await page.$$eval("input[type=password]", (els) => els.some((e) => e.offsetParent && !e.value)).catch(() => false);
+  if (emptyPassword) return "opened; password needed (left to the human)";
+  for (const b of await page.$$("button, input[type=submit], a[role=button]")) {
+    const label = ((await b.innerText().catch(() => "")) || (await b.getAttribute("value").catch(() => "")) || "").trim();
+    if (SIGN_IN.test(label) && (await b.isVisible().catch(() => false))) {
+      await b.click().catch(() => {});
+      await page.waitForTimeout(settleMs);
+      return `opened; pressed "${label}"`;
+    }
+  }
+  return "opened";
+}
+
+async function nudgeWindow(cdp, url) {
+  const { chromium } = await playwright();
+  const browser = await chromium.connectOverCDP(cdp);
+  try {
+    const ctx = browser.contexts()[0];
+    const site = new URL(url).hostname.split(".").slice(-2).join(".");
+    const page = ctx.pages().find((p) => p.url().includes(site)) ?? ctx.pages()[0] ?? (await ctx.newPage());
+    return await nudgeSignIn(page, url);
+  } finally {
+    await browser.close().catch(() => {}); // over CDP this detaches; the human's window stays open
+  }
+}
+
 export async function main(argv) {
   const { own, pass, dir, loginPattern, maxNodes } = parse(argv);
   if (own.workers !== undefined) throw new Error("--workers is not supported: store.mjs rewrites graph.json whole with no lock or merge, so concurrent explores on one dir lose nodes. Run one supervise per dir copy (--dir <copy> --only-prefix /area).");
@@ -198,6 +235,10 @@ export async function main(argv) {
     const candidate = `${stateFile}.candidate`;
     let last = "";
     for (;;) {
+      if (!own["no-nudge"]) {
+        const did = await nudgeWindow(loginCdp, checkUrl).catch((e) => `nudge failed: ${e.message}`);
+        appendFileSync(logPath, `  nudge: ${did}\n`);
+      }
       // A fresh copy out of the human's window first; then the file as it stands (someone may
       // have run export-login by hand). Either one counts only once a real page proves it.
       const ex = await run([EXPORT, "--cdp", loginCdp, "--domain", domain, "--out", candidate]);
