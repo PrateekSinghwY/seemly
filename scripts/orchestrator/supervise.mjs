@@ -150,6 +150,11 @@ export async function supervise({ dir, runChunk, waitForLogin, requeue, log, sta
     }
     failed = null;
     if (after.frontier === 0) continue;
+    // A worker on `--only-prefix` whose own area is walked is done, though siblings' nodes remain.
+    if (/\b0 open in this worker's area\b/.test(r.out ?? "")) {
+      log(`DONE area: 0 open in this worker's area (${after.frontier} left for other workers)`);
+      return { code: 0, reason: "area done" };
+    }
     stalls = closed > 0 ? 0 : stalls + 1;
     if (stalls >= stallLimit) {
       const why = `stalled: ${stalls} chunks in a row closed 0 nodes with ${after.frontier} on the frontier`;

@@ -186,3 +186,15 @@ test("nudge: a page with an empty password field is left to the human; nothing i
 test("nudge: --no-nudge is a bare flag", () => {
   assert.equal(parseSupervise(["--no-nudge", "--dir", "d"]).own["no-nudge"], true);
 });
+
+test("a worker whose own area is walked ends DONE, not stalled", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "sup-area-"));
+  const g = open(dir, { origin: "https://a.test" });
+  const a = g.addNode({ url: "https://a.test/x", signature: ["x"], entry: true }).node;
+  save(g, dir);
+  const lines = [];
+  const r = await supervise({ dir, runChunk: async () => ({ code: 0, out: "expanded 0 node(s); graph still open; 0 open in this worker's area\n" }), waitForLogin: async () => true, requeue: async () => {}, log: (s) => lines.push(s) });
+  assert.equal(r.code, 0);
+  assert.equal(r.reason, "area done");
+  assert.ok(a.id);
+});
