@@ -73,6 +73,39 @@ test("struct_audit: an invented button and a missing column fail; identical page
   }
 });
 
+// Setup pages: the reference renders "Create"; the clone puts a Material Symbols ligature in front
+// of it. Labels are accessible names, so the icon is not part of the label.
+const ICON_REF = page(`<h1>Setup</h1><button>Create</button><button aria-label="Edit row">Edit</button><button id="d">Delete</button>
+<label for="q">Search</label><input id="q">`);
+const ICON_CLONE = page(`<h1><span class="material-icons">tune</span>Setup</h1>
+<button><span aria-hidden="true" class="material-symbols-outlined">add_circle</span>Create</button>
+<button aria-labelledby="el"><span class="material-symbols-outlined">edit</span><span id="el">Edit row</span></button>
+<button><i style="font-family:'Material Symbols Outlined'">delete</i><span role="img" aria-label=""><b>trash</b></span>Delete</button>
+<label for="q"><span aria-hidden="true">search</span>Search</label><input id="q">`);
+const ICON_WRONG = ICON_CLONE.replace("add_circle</span>Create", "add_circle</span>Create new");
+
+test("struct_audit: icon ligatures are not label text; a real label difference still fails", { skip, timeout: 300_000 }, async () => {
+  const ref = await serve(site(ICON_REF));
+  const clone = await serve(site(ICON_CLONE));
+  const wrong = await serve(site(ICON_WRONG));
+  const cwd = mkdtempSync(join(tmpdir(), "qa-"));
+  try {
+    const ok = await run("struct_audit.mjs", ["--ref", `${ref.base}/setup`, "--clone", `${clone.base}/setup`], cwd);
+    assert.equal(ok.code, 0, ok.out);
+    const rec = JSON.parse(readFileSync(join(cwd, "d", "qa", "struct", "setup-1440.json"), "utf8"));
+    assert.deepEqual(rec.clone.buttons, ["Create", "Edit row", "Delete"]);
+    assert.deepEqual(rec.clone.headings, ["h1 Setup"]);
+    assert.deepEqual(rec.clone.fields, ["Search"]);
+    const bad = await run("struct_audit.mjs", ["--ref", `${ref.base}/setup`, "--clone", `${wrong.base}/setup`], cwd);
+    assert.equal(bad.code, 1, bad.out);
+    assert.match(bad.out, /buttons: missing \[Create\] invented \[Create new\]/);
+  } finally {
+    ref.server.close();
+    clone.server.close();
+    wrong.server.close();
+  }
+});
+
 test("width_sweep: overflow that appears only below 1300px is caught at that width", { skip, timeout: 300_000 }, async () => {
   const ref = await serve(site(REF));
   const clone = await serve(site(CLONE));

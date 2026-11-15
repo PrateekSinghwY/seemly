@@ -15,7 +15,48 @@ export function readLabels({ scopeCss = null } = {}) {
   const visible = (el) => (el.checkVisibility ? el.checkVisibility({ opacityProperty: true, visibilityProperty: true }) : el.getClientRects().length > 0);
   // Digits are data, not structure: "3 listings" and "41 listings" are one label.
   const norm = (s) => (s ?? "").replace(/\s+/g, " ").trim().replace(/\d+([.,]\d+)*/g, "#").slice(0, 80);
-  const name = (el) => norm(el.getAttribute("aria-label") || el.innerText || el.getAttribute("title") || el.value || el.querySelector("img[alt]")?.alt || "");
+  // Labels are accessible names, not visible text: an icon-font ligature inside a control
+  // ("<span aria-hidden class=material-symbols-outlined>add_circle</span>Create") is not part of
+  // the label "Create". Reading innerText made every icon button differ from a reference that
+  // renders the same icon another way.
+  const ICON_CLASS = /(^|\s)(material-icons|material-symbols)[\w-]*/;
+  const ICON_FONT = /material (icons|symbols)|font ?awesome|glyphicons|icomoon|ionicons|bootstrap-icons|codicon/i;
+  const isIconFont = (el) => ICON_CLASS.test(el.className?.baseVal ?? el.className ?? "") || ICON_FONT.test(getComputedStyle(el).fontFamily);
+  const hidden = (el) => {
+    if (el.getAttribute("aria-hidden") === "true") return true;
+    const cs = getComputedStyle(el);
+    return cs.display === "none" || cs.visibility === "hidden";
+  };
+  const byIds = (el, attr) => (el.getAttribute(attr) || "").split(/\s+/).map((id) => id && document.getElementById(id)).filter(Boolean);
+  // Name from content: text of the subtree minus aria-hidden / hidden nodes, role=img (named only
+  // by its own aria-label), and icon-font glyphs.
+  const content = (el, depth = 0) => {
+    let out = "";
+    for (const n of el.childNodes) {
+      if (n.nodeType === 3) out += n.textContent;
+      else if (n.nodeType === 1) {
+        if (/^(SCRIPT|STYLE|TEMPLATE|INPUT|SELECT|TEXTAREA)$/.test(n.tagName) || hidden(n) || isIconFont(n)) continue;
+        const role = n.getAttribute("role");
+        if (role === "img") { out += ` ${n.getAttribute("aria-label") || ""} `; continue; }
+        if (n.tagName === "IMG") { out += ` ${n.getAttribute("alt") || ""} `; continue; }
+        if (n.tagName === "BR") { out += " "; continue; }
+        if (depth < 30) out += ` ${n.getAttribute("aria-label") || content(n, depth + 1)} `;
+      }
+    }
+    return out;
+  };
+  const accName = (el) => {
+    const by = byIds(el, "aria-labelledby");
+    if (by.length) return by.map((x) => x.getAttribute("aria-label") || content(x)).join(" ");
+    return el.getAttribute("aria-label") || content(el);
+  };
+  // Fallback, only when there is no accessible name: visible text with icon-font glyph text removed.
+  const visibleText = (el) => {
+    let t = el.innerText || "";
+    for (const i of el.querySelectorAll("*")) if (isIconFont(i) && i.textContent.trim()) t = t.replace(i.textContent.trim(), " ");
+    return t;
+  };
+  const name = (el) => norm(norm(accName(el)) || visibleText(el) || el.getAttribute("title") || el.value || el.querySelector("img[alt]")?.alt || "");
   const all = (sel, f = name, within = root) => [...within.querySelectorAll(sel)].filter(visible).map(f).filter(Boolean);
   const NAV = "nav,header,[role=navigation],[role=banner],[role=menubar],[role=tablist]";
   const inNav = (el) => !!el.closest(NAV);
@@ -32,9 +73,12 @@ export function readLabels({ scopeCss = null } = {}) {
     tabs: all("[role=tab]"),
     buttons: [...root.querySelectorAll("button,[role=button],input[type=submit],input[type=button]")].filter((el) => visible(el) && !inNav(el) && !inRow(el)).map(name).filter(Boolean),
     tableHeaders: all("th,[role=columnheader]"),
-    fields: [...root.querySelectorAll("input:not([type=hidden]),select,textarea")].filter((el) => visible(el) && !inRow(el)).map((el) =>
-      norm((el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`)?.innerText) || el.closest("label")?.innerText || el.getAttribute("aria-label") || el.getAttribute("placeholder") || el.name || ""),
-    ).filter(Boolean),
+    fields: [...root.querySelectorAll("input:not([type=hidden]),select,textarea")].filter((el) => visible(el) && !inRow(el)).map((el) => {
+      const by = byIds(el, "aria-labelledby");
+      const forLabel = el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+      const wrap = el.closest("label");
+      return norm((by.length && by.map((x) => x.getAttribute("aria-label") || content(x)).join(" ")) || el.getAttribute("aria-label") || (forLabel && name(forLabel)) || (wrap && name(wrap)) || el.getAttribute("placeholder") || el.name || "");
+    }).filter(Boolean),
     overflowX: scopeCss ? root.scrollWidth > root.clientWidth + 1 : document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
   };
 }
