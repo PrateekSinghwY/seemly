@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, statSync } from "node:fs";
 
 // What the explorer must not fire on the reference unattended (SKILL.md section 4: paid,
 // sending, publishing, deleting or account-changing actions are never fired; the first write
@@ -491,14 +491,29 @@ export function neverOpenPattern(url) {
 
 /** never-open.jsonl: URL patterns no walk may navigate to again. */
 export class NeverOpen {
-  constructor(path = null) {
+  /**
+   * `path`: this walk's list. `shared`: more lists to read and write too, so parallel workers
+   * forked from one graph (`O fork`) learn a session-ending URL from each other at once.
+   */
+  constructor(path = null, { shared = [] } = {}) {
     this.path = path;
+    this.paths = [path, ...shared].filter(Boolean);
     this.rows = [];
-    if (path && existsSync(path)) {
-      for (const l of readFileSync(path, "utf8").split("\n").filter(Boolean)) {
+    this.seen = new Map();
+    this.reload();
+  }
+
+  /** Read rows a sibling appended since the last read (cheap: only when a file grew). */
+  reload() {
+    for (const p of this.paths) {
+      if (!existsSync(p)) continue;
+      const size = statSync(p).size;
+      if (this.seen.get(p) === size) continue;
+      this.seen.set(p, size);
+      for (const l of readFileSync(p, "utf8").split("\n").filter(Boolean)) {
         try {
           const r = JSON.parse(l);
-          if (r?.pattern) this.rows.push({ ...r, re: new RegExp(r.pattern, "i") });
+          if (r?.pattern && !this.rows.some((x) => x.pattern === r.pattern)) this.rows.push({ ...r, re: new RegExp(r.pattern, "i") });
         } catch {}
       }
     }
@@ -507,16 +522,18 @@ export class NeverOpen {
   /** The row whose pattern matches `url`, or null. */
   match(url) {
     if (!url) return null;
+    this.reload();
     return this.rows.find((r) => r.re.test(String(url))) ?? null;
   }
 
-  /** Record `url` (once per pattern); returns the row. */
+  /** Record `url` (once per pattern) in every list; returns the row. */
   add(url, extra = {}) {
     const pattern = neverOpenPattern(url);
+    this.reload();
     const had = this.rows.find((r) => r.pattern === pattern);
     if (had) return had;
     const row = { pattern, url, ...extra, at: new Date().toISOString() };
-    if (this.path) appendFileSync(this.path, JSON.stringify(row) + "\n");
+    for (const p of this.paths) appendFileSync(p, JSON.stringify(row) + "\n");
     this.rows.push({ ...row, re: new RegExp(pattern, "i") });
     return row;
   }

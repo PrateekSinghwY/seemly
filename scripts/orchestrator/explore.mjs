@@ -245,7 +245,10 @@ export async function explore(g, dir, opts = {}) {
   await context.addInitScript({ content: LISTENER_HOOK });
   const net = { blocked: [], reads: 0, popups: [], dialogs: [], downloads: [], bodies: null, ws: null, failures: [], refused: [] };
   // URLs no walk may open again (they signed the session out once): refused before every navigation.
-  const never = new NeverOpen(join(dir, "never-open.jsonl"));
+  // A worker copy (`O fork`) shares its parent's list, so siblings learn from each other at once.
+  const forkFile = join(dir, "fork.json");
+  const parent = existsSync(forkFile) ? JSON.parse(readFileSync(forkFile, "utf8")).parent : null;
+  const never = new NeverOpen(join(dir, "never-open.jsonl"), { shared: parent ? [join(parent, "never-open.jsonl")] : [] });
   // Per page: "load" from a document load until the walker acts on it (a click, a key, a hover,
   // a dismiss), then "action". A POST sent at load is a read unless its name is a clear write
   // (safety.mjs). Only a document request starts a load: a hash or pushState change inside a

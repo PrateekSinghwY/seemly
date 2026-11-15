@@ -11,7 +11,7 @@
 // The target must not have a walk running (walk-lock); copies are read only.
 
 import { cpSync, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { Graph } from "./graph.mjs";
 
@@ -76,5 +76,7 @@ export function mergeDirs(intoDir, fromDirs) {
 export function workerCopy(fromDir, toDir) {
   rmSync(toDir, { recursive: true, force: true });
   cpSync(fromDir, toDir, { recursive: true, filter: (p) => !p.startsWith(join(fromDir, "nodes") + "/") && !/\/(supervise\.pid|walk\.lock)$/.test(p) });
+  // explore reads the parent's never-open.jsonl through this, so sibling workers share it.
+  writeFileSync(join(toDir, "fork.json"), JSON.stringify({ parent: resolve(fromDir) }) + "\n");
   return readdirSync(toDir).length;
 }

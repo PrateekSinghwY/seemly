@@ -81,3 +81,18 @@ test("merge refuses while a live walk holds the target", () => {
   writeFileSync(join(main, "supervise.pid"), String(process.pid));
   assert.throws(() => O(["merge", "--into", main, "--from", main]), /walk running/);
 });
+
+import { NeverOpen } from "../safety.mjs";
+test("never-open: worker copies share their parent's list, and a sibling's new row is seen at once", () => {
+  const root = mkdtempSync(join(tmpdir(), "never-"));
+  const main = join(root, "main");
+  save(base().g, main);
+  for (const w of ["w1", "w2"]) O(["fork", "--dir", main, "--out", join(root, w)]);
+  const fork = JSON.parse(readFileSync(join(root, "w1", "fork.json"), "utf8"));
+  const a = new NeverOpen(join(root, "w1", "never-open.jsonl"), { shared: [join(fork.parent, "never-open.jsonl")] });
+  const b = new NeverOpen(join(root, "w2", "never-open.jsonl"), { shared: [join(fork.parent, "never-open.jsonl")] });
+  assert.equal(b.match("https://a.test/app/#/logout-page"), null);
+  a.add("https://a.test/app/#/logout-page", { why: "test" });
+  assert.ok(b.match("https://a.test/app/#/logout-page"), "the sibling sees the new row without a restart");
+  assert.ok(readFileSync(join(main, "never-open.jsonl"), "utf8").includes("logout-page"), "the parent keeps it for the merge");
+});
