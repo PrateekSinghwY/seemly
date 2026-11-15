@@ -733,6 +733,23 @@ export class Graph {
   }
 
   /**
+   * `O requeue --scope S01,S02`: after the app this graph walked is rebuilt, every closed node in
+   * those scopes back on the frontier, so the walk captures the new build and verify never compares
+   * a stale capture. Gaps keep their reason. Returns the requeued nodes.
+   */
+  requeueScope(scopes) {
+    const want = new Set(scopes);
+    const out = [];
+    for (const n of Object.values(this.data.nodes)) {
+      if (!want.has(n.scope) || n.status === "frontier" || n.status === "gap") continue;
+      n.attempts = 0;
+      this.setStatus(n.id, "frontier", null);
+      out.push(n);
+    }
+    return out;
+  }
+
+  /**
    * `O requeue --kind overlay,modal,...`: nodes of those kinds that have no content key (an older
    * graph merged look-alike overlays into one) back on the frontier, with the nodes that open them,
    * so the next walk reads each one's key and splits what was merged. Returns the requeued nodes.

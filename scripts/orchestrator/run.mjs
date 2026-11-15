@@ -28,6 +28,7 @@
 //             | requeue --shallow                                 every node closed shallowly back on the frontier for a full walk
 //             | requeue --partial                                 every node closed partial (node budget spent) back on the frontier
 //             | requeue --needs-recapture                         every node relabel could not relabel offline, back for a re-walk
+//             | requeue --scope S01,S02                           after a rebuild, every closed node in those scopes walked again
 //     relabel [--node id] [--dry-run]                              saved widths.json labels up to the current readLabels rules,
 //                                                                  offline from each node's dom.html (relabel.mjs); refuses while
 //                                                                  a walk writes the dir (supervise.pid / walk.lock)
@@ -420,6 +421,14 @@ switch (cmd) {
       save(g, dir);
       for (const n of done) say(`requeued ${n.id} ${n.label}`);
       say(`requeued ${done.length} needs-recapture node(s) for a re-walk`);
+      break;
+    }
+    // --scope S01,S02: after a rebuild of the app this graph walked, every closed node tagged with
+    // those scopes is walked again, so its captures show the new build.
+    if (o.scope) {
+      const done = g.requeueScope(o.scope.split(",").map((s) => s.trim()).filter(Boolean));
+      save(g, dir);
+      say(`requeued ${done.length} node(s) in ${o.scope} for a re-capture of the rebuilt app`);
       break;
     }
     // --kind: nodes of those kinds with no content key (an older graph merged look-alike overlays),

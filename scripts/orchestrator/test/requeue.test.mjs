@@ -92,3 +92,24 @@ test("O requeue --gaps [--reason] on a saved graph, judged by the walker's rule"
   assert.equal(saved.nodes[ruled.id].status, "gap");
   assert.equal(Object.values(saved.nodes).filter((n) => n.status === "frontier").length, 2);
 });
+
+test("requeueScope: after a rebuild, closed nodes in the named scopes walk again; gaps and other scopes stay", () => {
+  const g = Graph.create();
+  const home = g.addNode({ url: "https://a.test/app/", signature: ["home"], entry: true }).node;
+  const mk = (path, sig, scope) => Object.assign(g.addNode({ url: `https://a.test${path}`, signature: [sig] }).node, { scope });
+  const s01 = mk("/app/punch", "p", "S01");
+  const s02 = mk("/app/card", "c", "S02");
+  const out = mk("/app/pay", "y", "OUT-S12");
+  const gap = mk("/app/gone", "g", "S01");
+  g.next();
+  for (const n of [home, s01, s02, out]) { g.frontier.delete(n.id); g.setStatus(n.id, "closed"); }
+  g.frontier.delete(gap.id);
+  g.setStatus(gap.id, "gap", "human ruling: not in this build");
+  s01.attempts = 2;
+  const back = g.requeueScope(["S01", "S02"]).map((n) => n.id).sort();
+  assert.deepEqual(back, [s01.id, s02.id].sort());
+  assert.equal(g.node(s01.id).status, "frontier");
+  assert.equal(g.node(s01.id).attempts, 0);
+  assert.equal(g.node(out.id).status, "closed");
+  assert.equal(g.node(gap.id).status, "gap");
+});
