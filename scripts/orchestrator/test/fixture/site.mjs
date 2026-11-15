@@ -27,6 +27,10 @@
 //   /rows/   a schedule grid of 50 data rows (synthetic names, dates, times), one shift chip per
 //            row that is draggable (it only moves) and right-clickable (a glance titled with the
 //            row's person), plus two confirms with different titles (Approve / Sign-off)
+//   /cols/   a dataview grid of 30 columns, each header with a ▾ "<column> column, more actions"
+//            button opening one shared menu titled by the column and a generated class
+//            (`.grid<digits>`): text columns offer sort, hide, group by and count; the last 10,
+//            number columns (class `num`), add Sum and Avg
 //   /out/    a link to /out/forecast, which redirects to /out/forecast#/logout and ends the
 //            session; every /out/ page after it redirects to /login
 
@@ -211,6 +215,32 @@ for (const c of document.querySelectorAll('.chip')) {
 }
 </script>`);
 
+/** The /cols/ grid: 20 text columns, then 10 number columns. All names synthetic. */
+const COL_TEXT = ["Employee id", "Employee name", "Department", "Job", "Location", "Manager", "Pay rule", "Status", "Shift type", "Team",
+  "Cost center", "Union", "Region", "Badge", "Home site", "Work rule", "Leave case", "Reason", "Category", "Comment"];
+const COL_NUM = ["Actual hours", "Scheduled hours", "Overtime hours", "Regular hours", "Wages", "Overtime costs", "Absences", "Tardies", "Splh", "Variance"];
+export const colsHome = () => plain("Dataview", `<h1>Dataview</h1>
+<style>th{padding:2px 6px;white-space:nowrap}.mb{margin-left:4px}</style>
+<table><thead><tr>${[...COL_TEXT.map((c) => [c, false]), ...COL_NUM.map((c) => [c, true])]
+  .map(([c, num]) => `<th class="col${num ? " num" : ""}"><span>${c}</span><button class="mb" aria-label="${c} column, more actions" onclick="menu(this,${num})">▾</button></th>`)
+  .join("")}</tr></thead>
+<tbody><tr>${Array.from({ length: 30 }, () => "<td>-</td>").join("")}</tr></tbody></table>
+<div id="m" role="menu" style="position:fixed;z-index:50;top:60px;left:40px;width:220px;background:#fff;border:1px solid #333" hidden></div>
+<script>
+const $=(id)=>document.getElementById(id);
+let seq=0;
+function shut(){$('m').hidden=true}
+function menu(b,num){
+  const col=b.previousElementSibling.textContent;
+  const id='grid'+(1794721638366+(++seq));
+  const items=['Sort ascending','Sort descending','Hide column','Group by this column','Count'].concat(num?['Sum','Avg']:[]);
+  $('m').className=id;
+  $('m').innerHTML='<style>.'+id+' .mi{display:block}</style><div class="mt">'+col+'</div><div>'+items.map((t)=>'<button class="mi" role="menuitem" onclick="shut()">'+t+'</button>').join('')+'</div>';
+  $('m').hidden=false;
+}
+document.addEventListener('keydown',(e)=>{if(e.key==='Escape')shut()});
+</script>`);
+
 /**
  * The interaction kit. `variant` "ref" is the full behaviour; "clone" differs in exactly three
  * interactions: its right-click opens nothing, alt+m is unbound, and its required field shows no
@@ -368,6 +398,7 @@ export function start() {
     }
     if (url.pathname === "/conf/") return html(confHome);
     if (url.pathname === "/rows/") return html(rowsHome(50));
+    if (url.pathname === "/cols/") return html(colsHome());
     if (url.pathname.startsWith("/pick/")) {
       if (url.pathname === "/pick/") return html(pickHome);
       if (url.pathname === "/pick/api/timecards/multi_read") return json({ rows: ["Mon 8.0", "Tue 7.5", "Wed 8.0"] });

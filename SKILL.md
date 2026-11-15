@@ -338,6 +338,23 @@ full audit:
   before the rule, stop its walk and run `O dedupe --dry-run`, then `O dedupe`: exploded
   data-row states merge into one closed sample per (row template, kind, normalised title,
   template), their edges are rewritten to it, and the group is seeded as sampled.
+- **Repeated click triggers are sampled too** (`bound.mjs` `clickGroups` `stripGenerated`,
+  `test/cols.test.mjs`). A click on one of ROW_MIN or more look-alike non-link triggers of one
+  role and css template whose names share words or are one name (a ▾ per column header, a kebab
+  per row; never a toolbar of different commands, tabs, menu items, options, radios or
+  checkboxes) is a sample: `--row-sample` K per (page template, trigger group, hint)
+  across the walk, more only while each opens a new overlay template and content key, the rest
+  `sampled-out` with the group id. The hint is the class and data-type tokens of the trigger and
+  its cell that set some members apart (a number column's `num` against a text column), so a
+  number column's Sum/Avg menu is still reached; a group whose sample changes the page in place,
+  navigates or does nothing fires in full, as before. The overlay is keyed `click:row:<id>`, and
+  its label and content key read the column's own text as `<item>`, so two columns' menus key
+  alike while menus with other items stay apart. Labels and state keys drop generated class
+  names and ids (a token with 6+ digits or an 8+ hex run: `.grid1794721638366`), and content
+  keys read hex ids as `<id>`. Before this, one overlay per column and per dataview page was
+  walked at about 28 s each (260 in one queue). `O dedupe` also collapses those: overlays whose
+  every in-edge (click, key, hover, write) comes from one trigger group on pages of one template
+  merge into one node per (template, content key), and every label loses its generated ids.
 - **The clone side** is walked on an isolated copy (own DB copy, own ports, never the dev DB:
   a copy-on-write clone deleted when the walk ends, per the Storage section of
   `video/SKILL.md`, which binds every seemly test run) with `--allow-post '.*'`, so every write flow runs end to end; `errors.jsonl` then lists each

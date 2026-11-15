@@ -29,6 +29,7 @@ Site-agnostic: nothing here names a target. A build's data lives in its own
 | 11 | unscoped is not out of scope: only a node a rule put in another scope closes shallow; unscoped nodes are walked fully after in-scope ones; a coverage guard warns (or `--strict-scope` exits 4) when the map matches under half the entries or walked nodes; `status` counts unscoped and shallow; `requeue --shallow` | `graph.mjs` `explore.mjs` `run.mjs` | done 2026-11-15 (`test/scope-guard`) |
 | 12 | `supervise`: explore chunks to frontier 0, status per chunk in `supervise.log`; on exit 3 prints `WAITING FOR SIGN-IN since <time>`, polls the human's window (`export-login.mjs`), proves the login with a headless page (`sessionState`; cookie count only a pre-check), saves it, `requeue --gaps`, resumes; exit 4 stops, another failure retries once, three chunks closing nothing stop as stalled (exit 5). No `--workers`: `store.mjs` has one writer per graph dir | `supervise.mjs` `run.mjs` `test/fixture/site.mjs` | done 2026-11-15 (`test/supervise`) |
 | 13 | data rows sampled, not exploded: right-click, double-click, drag and form on a data row (ROW_MIN look-alikes) fire K (`--row-sample`, default 2) per (page, row template, kind) across the walk, more only while each leads to a new template (`rowSampler`, counts in graph meta `rowSamples`); their states are named by row template, not row text; content keys normalise names, dates, weekdays, times and numbers (`normaliseData`, the same rules in `page-probe.mjs`); a state with its parent's skeleton is closed `same-as-parent` with its artifacts, not walked; `dedupe [--dry-run]` merges an older graph's exploded row states | `bound.mjs` `interactions.mjs` `explore.mjs` `page-probe.mjs` `graph.mjs` `run.mjs` | done 2026-11-15 (`test/rows`) |
+| 14 | repeated click triggers sampled: a ▾ per column header or a kebab per row (ROW_MIN look-alikes of one role) fires K per (page template, trigger group, type hint), more only while each opens a new overlay, the rest `sampled-out` with the group id; column text reads `<item>` in labels and content keys; generated ids (`.grid<digits>`) leave labels and state keys; `dedupe` collapses an older graph's per-column, per-page menus | `bound.mjs` `explore.mjs` `page-probe.mjs` `run.mjs` | done 2026-11-15 (`test/cols`) |
 
 Not done: the walker does not draw on a map or canvas (Chrome does, SKILL.md section 4);
 `graph.html` is regenerated per chunk (`watch` is the streamed view); workers share no graph file, so
@@ -236,7 +237,26 @@ them, more only while each sample leads to a new template, at most STATE_BOUND; 
 Content keys run the same normalisation in the page, so a glance titled with any person is one
 node, while different titles ("Approve timecard", "Sign-off") stay apart. `O dedupe [--dry-run]`
 repairs an older graph: nodes whose every in-edge comes from one row group of one kind merge per
-(page, kind, row group, normalised label, template) into a closed sample, edges rewritten. Every edge records
+(page, kind, row group, normalised label, template) into a closed sample, edges rewritten.
+
+**Repeated click triggers.** `clickGroups` finds ROW_MIN or more non-link candidates of one role
+and css template on a node whose names share words or are one name (column-header ▾ buttons,
+row kebabs; a toolbar of different commands, tabs, menu items, options,
+radios, checkboxes, switches and fields never). Each member gets its group, a `hint` (class and
+`data-type` tokens of it and three ancestors, from `page-probe.mjs` `hintOf`, kept when they set
+members apart or name a type: `num`, `date`, `right`, ...) and `text` (the part of its name the
+members do not share: the column). The click loop takes from the same `rowSampler` store under
+`<page template>|click|<role>|<css group>|<hint>`: K per key, more only while each opens a new
+`<template>:<contentKey>`, the rest `sampled-out` with `group`. A sample that never fired is given
+back (`release`); one that changed the page in place, navigated or did nothing makes the group
+fire in full (`exempt`). The overlay is keyed `click:row:<id>`, labelled with `maskItem` (the
+column text as `<item>`) and `normaliseData`, and its content key is read with the same `mask`.
+`stripGenerated` takes generated class names and ids out of every overlay label and state key.
+`O dedupe` runs `dedupeClicks` after the row pass: an overlay, menu or modal whose every in-edge
+(click, key, hover, or a write by one of them) comes from one trigger group (role, css group) on
+pages of one template, with ROW_MIN members on some page, merges per (template, content key) into
+a closed sample; edges are rewritten, the click sampler seeded, and every label is stripped of
+generated ids. Every edge records
 what replays it, and `replayEdge` replays any kind for the walker's `reach` and verify's
 `reachClone`. `focus.json` is the Tab order (`focusOrder`). The invariant
 (`interactionInvariant`) holds a node open until every row is an edge, a fired result or a known
@@ -293,7 +313,7 @@ node run.mjs explore --max-nodes 40 [--risky probe] [--allow-post <regex>] [--cd
 node run.mjs status | tree | live | pending | frontier | route <id> | loops
 node run.mjs watch [--port 4777] [--dir d] [more dirs]           # streamed live tree, agents, blockers, replay
 node run.mjs requeue <id> | requeue --failed | requeue --gaps [--reason <text>] | requeue --risky | requeue --shallow | gap <id> --reason "..."
-node run.mjs dedupe [--dry-run]                     # merge an older walk's per-row states (stop the walk first)
+node run.mjs dedupe [--dry-run]                     # merge an older walk's per-row states and per-column menus (stop the walk first)
 node run.mjs supervise --dir <copy> --only-prefix /area ...     # one parallel worker per area
 node run.mjs explore ... --ws-guard block|off --retries 3 --login-pattern <regex> --widths off|1024,1280
 node run.mjs explore ... --keyboards <repo>/keyboards.json      # documented shortcuts on every template

@@ -25,7 +25,7 @@ import { join } from "node:path";
 
 import { openReference, settle } from "../lib/pw.mjs";
 import { similarity } from "./algorithms.mjs";
-import { ROW_SAMPLE, STATE_BOUND, admit, inScope, normaliseData, repeatGroup, rowId, rowSampler } from "./bound.mjs";
+import { ROW_SAMPLE, STATE_BOUND, admit, clickGroups, inScope, maskItem, normaliseData, repeatGroup, rowId, rowSampler, stripGenerated } from "./bound.mjs";
 import { KEYED_KINDS, scopeByRules } from "./graph.mjs";
 import { INTERACTION_UNFIRED, LISTENER_HOOK, focusOrder, interactionInvariant, locateFor, perform, readShortcuts, replayEdge, runInteractions } from "./interactions.mjs";
 import { DEFAULT_WIDTHS, readLabels } from "../qa/labels.mjs";
@@ -363,7 +363,7 @@ export async function explore(g, dir, opts = {}) {
 
   const sigOf = async (scopeCss = null) => (await page.evaluate(probe, { scopeCss, sigOnly: true })).signature;
   /** Skeleton plus content key (page-probe.mjs `contentKey`), for a surface about to become a node. */
-  const readOf = async (scopeCss = null) => page.evaluate(probe, { scopeCss, sigOnly: true });
+  const readOf = async (scopeCss = null, mask = "") => page.evaluate(probe, { scopeCss, sigOnly: true, mask });
 
   // ---------- session and transient errors, on every navigation ----------
 
@@ -733,11 +733,12 @@ export async function explore(g, dir, opts = {}) {
    * validation state, a drag's geometry), a native dialog or download, a write attempt, or
    * nothing (`inert`). `kind` is the edge kind when no write was sent; a write makes it `write`.
    */
-  async function observe(n, c, { kind = "click", element, before, urlBefore, rawBefore, mark, loc, expandedBefore, out, change, changeBefore, stateKey, row = null }) {
+  async function observe(n, c, { kind = "click", element, before, urlBefore, rawBefore, mark, loc, expandedBefore, out, change, changeBefore, stateKey, row = null, rowText = "" }) {
     // Fired on a data row: what it opens is named by the row template and the kind, never by the
-    // row's text (one state per shift chip was 238 nodes on one planner).
+    // row's text (one state per shift chip was 238 nodes on one planner). A repeated click trigger
+    // (a ▾ per column) is one too: its column's own text (`rowText`) reads <item>.
     const rowState = row ? `${kind}:row:${rowId(row)}` : null;
-    const rowLabel = (s) => (row ? normaliseData(s) : s);
+    const rowLabel = (s) => (row ? normaliseData(maskItem(s, rowText)) : s);
     const link = (k, node, request = null) => {
       // A result an older graph recorded for this same control under a look-alike it was merged
       // into (same kind and skeleton family, another content key) is stale once the split is read.
@@ -811,9 +812,10 @@ export async function explore(g, dir, opts = {}) {
       // A tooltip after a click is the pointer resting on something, not what the click opened.
       const ov = (await page.evaluate(newOverlays, FLOATING_SEL)).find((o) => o.role !== "tooltip");
       if (ov) {
-        const { signature: sig, contentKey } = await readOf(ov.css);
+        const { signature: sig, contentKey } = await readOf(ov.css, row ? rowText : "");
         const okind = KIND_OF_ROLE[ov.role] ?? "overlay";
-        const { node } = stateNode({ url: page.url(), state: rowState ?? `${okind}:${ov.name || c.name}`, signature: sig, contentKey, kind: okind, label: `${okind}: ${rowLabel(ov.name || c.name)}` });
+        const name = stripGenerated(ov.name) || c.name;
+        const { node } = stateNode({ url: page.url(), state: rowState ?? `${okind}:${name}`, signature: sig, contentKey, kind: okind, label: `${okind}: ${rowLabel(name)}` });
         link(kindOf(), node, request);
         out.outcome = "overlay";
       } else {
@@ -842,8 +844,11 @@ export async function explore(g, dir, opts = {}) {
             }
           }
         } else if (reshaped || (expandedBefore !== expandedAfter && expandedAfter === "true")) {
-          const state = rowState ?? stateKey ?? `${c.role}:${c.name}`;
-          const { node } = stateNode({ url: page.url(), state, signature: after, contentKey, kind: "state", label: `${kind === "click" ? "" : `${kind} `}${c.role}: ${rowLabel(c.name)}` });
+          // A repeated click trigger is sampled for what it opens; one that changes the page in
+          // place names its state as any click does (its group then fires in full).
+          const inPlace = kind === "click" ? null : rowState;
+          const state = inPlace ?? stateKey ?? `${c.role}:${c.name}`;
+          const { node } = stateNode({ url: page.url(), state, signature: after, contentKey, kind: "state", label: `${kind === "click" ? "" : `${kind} `}${c.role}: ${inPlace ? rowLabel(c.name) : c.name}` });
           if (node.id !== n.id) {
             link(kindOf(), node, request);
             out.outcome = "state";
@@ -866,7 +871,7 @@ export async function explore(g, dir, opts = {}) {
    * Fire one element from `n`, from the verified pre-state `pre`, and say what happened.
    * `ensure` re-verifies the pre-state between the hover and the click.
    */
-  async function tryElement(n, c, pre, ensure) {
+  async function tryElement(n, c, pre, ensure, cg = null) {
     const element = { role: c.role, name: c.name, css: c.css, nth: c.nth };
     const out = { outcome: "inert", children: [] };
     const loc = await locate(page, c);
@@ -882,9 +887,11 @@ export async function explore(g, dir, opts = {}) {
       await page.waitForTimeout(350);
       const ov = (await page.evaluate(newOverlays, FLOATING_SEL))[0];
       if (ov) {
-        const { signature: sig, contentKey } = await readOf(ov.css);
+        const { signature: sig, contentKey } = await readOf(ov.css, cg?.text ?? "");
         const kind = KIND_OF_ROLE[ov.role] ?? "overlay";
-        const { node } = stateNode({ url: page.url(), state: `${kind}:${ov.name || c.name}`, signature: sig, contentKey, kind, label: `${kind}: ${ov.name || c.name}` });
+        const name = stripGenerated(ov.name) || c.name;
+        const label = cg ? normaliseData(maskItem(name, cg.text)) : name;
+        const { node } = stateNode({ url: page.url(), state: cg ? `hover:row:${rowId(cg.group)}` : `${kind}:${name}`, signature: sig, contentKey, kind, label: `${kind}: ${label}` });
         g.addEdge({ from: n.id, to: node.id, kind: "hover", element });
         out.children.push(node.id);
         out.outcome = "hover-overlay";
@@ -912,7 +919,7 @@ export async function explore(g, dir, opts = {}) {
     await settle(page, 2500);
     // A click that lands on a sign-in page or a "session expired" notice: the login is gone.
     await checkPage(page, { byName: c.name });
-    return observe(n, c, { kind: "click", element, before, urlBefore, rawBefore, mark, loc, expandedBefore, out });
+    return observe(n, c, { kind: "click", element, before, urlBefore, rawBefore, mark, loc, expandedBefore, out, row: cg?.group ?? null, rowText: cg?.text ?? "" });
   }
 
   /**
@@ -1071,6 +1078,10 @@ export async function explore(g, dir, opts = {}) {
     const groupSize = new Map();
     for (const c of r.candidates) if (!c.href) groupSize.set(repeatGroup(c.css), (groupSize.get(repeatGroup(c.css)) ?? 0) + 1);
     const groups = new Map();
+    // Repeated click triggers (a ▾ per column header, a kebab per row): K per (page template,
+    // trigger group, hint), more only while each opens something new; the rest `sampled-out`.
+    const clicky = clickGroups(r.candidates);
+    const clicks = rowSampler((g.data.meta.rowSamples ??= {}), { k: rowSample });
     const outcomes = [];
     // The node's pre-state: every element fires from exactly this, verified each time.
     const base = await preState();
@@ -1117,8 +1128,16 @@ export async function explore(g, dir, opts = {}) {
         continue;
       }
 
+      const cg = c.href ? null : clicky.get(c.css) ?? null;
+      const ckey = cg ? `${n.template}|click|${cg.group}|${cg.hint}` : null;
+      if (cg && !clicks.take(ckey)) {
+        outcomes.push(unfired(row, "sampled-out", { group: cg.id }));
+        continue;
+      }
       const grp = repeatGroup(c.css);
-      if (!c.href && (groupSize.get(grp) ?? 0) > STATE_BOUND) {
+      // a large group the click sampler does not hold (no trigger pattern, or it changes the page
+      // in place or navigates) is sampled as before
+      if ((!cg || g.data.meta.rowSamples[ckey]?.exempt) && !c.href && (groupSize.get(grp) ?? 0) > STATE_BOUND) {
         const G = groups.get(grp) ?? { tried: 0, leads: new Set() };
         groups.set(grp, G);
         if ((G.tried >= sample && G.leads.size <= 1) || G.tried >= STATE_BOUND) {
@@ -1138,15 +1157,16 @@ export async function explore(g, dir, opts = {}) {
           // Never fire from a state the last element left behind: restore, verify, then fire.
           const pre = await ensure();
           if (!pre.ok) {
+            if (ckey) clicks.release(ckey);
             outcomes.push(unfired(row, "state-not-restored"));
             continue;
           }
-          res = await tryElement(n, c, pre.pre, ensure);
+          res = await tryElement(n, c, pre.pre, ensure, cg);
           // Gone after the restore (a re-render moved it): one more try from a fresh load.
           if (["not-found", "unclickable"].includes(res.unfired)) {
             await reach(n, { fresh: true });
             const again = await ensure();
-            if (again.ok) res = await tryElement(n, c, again.pre, ensure);
+            if (again.ok) res = await tryElement(n, c, again.pre, ensure, cg);
           }
           // A write verb that sent nothing at all still needs its write path captured once. One
           // that sent only reads (an "Apply" that filters) is a read, not a pending write.
@@ -1160,6 +1180,15 @@ export async function explore(g, dir, opts = {}) {
         if (e instanceof SessionEnding) res = ended(n, c, e);
         else if (e instanceof SessionLost || BROWSER_GONE.test(e.message) || NETWORK_GONE.test(e.message)) throw e;
         else res = unfired({ children: [] }, "error", { error: e.message.split("\n")[0] });
+      }
+      if (ckey) {
+        // Sampled only while every sample opens an overlay or menu: a group whose members change
+        // the page in place, navigate or do nothing fires in full, as before.
+        const kids = (res.children ?? []).map((id) => g.data.nodes[id]);
+        if (isUnfired(res)) clicks.release(ckey);
+        else if (kids.length && kids.every((k) => k && ["overlay", "menu", "modal"].includes(k.kind))) clicks.lead(ckey, kids.map((k) => `${k.template}:${k.contentKey ?? ""}`).join(","));
+        else clicks.exempt(ckey);
+        if (cg) res.group = cg.id;
       }
       const G = groups.get(grp);
       if (G) G.leads.add((res.children ?? []).map((id) => g.data.nodes[id]?.template).join(",") || res.outcome);

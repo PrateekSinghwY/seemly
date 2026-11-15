@@ -13,7 +13,7 @@
 // and looking for floating things that are new after it.
 
 /** Probe the page, or one overlay of it when `scopeCss` names the overlay's root. */
-export function probe({ scopeCss = null, sigOnly = false, maxDepth = 18, maxModules = 40 } = {}) {
+export function probe({ scopeCss = null, sigOnly = false, maxDepth = 18, maxModules = 40, mask = "" } = {}) {
   const SKIP = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "LINK", "META", "BR", "WBR"]);
   const fnv = (s) => {
     let h = 0x811c9dc5;
@@ -51,6 +51,19 @@ export function probe({ scopeCss = null, sigOnly = false, maxDepth = 18, maxModu
     return parts.join(" > ");
   };
   const text = (s, n = 80) => (s ?? "").replace(/\s+/g, " ").trim().slice(0, n);
+  // What kind of cell a control sits on: class and data-type tokens of it and three ancestors,
+  // generated ones out, digits as # (bound.mjs `clickGroups` keeps the ones that set members apart).
+  const hintOf = (el) => {
+    const out = new Set();
+    for (let e = el, i = 0; e && e.nodeType === 1 && i < 4; e = e.parentElement, i++) {
+      for (const t of e.classList ?? []) if (t.length <= 40 && !/\d{6,}|(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{8,}/i.test(t)) out.add(t.replace(/\d+/g, "#"));
+      for (const a of ["data-type", "data-col-type", "data-column-type", "data-datatype", "data-kind"]) {
+        const v = e.getAttribute?.(a);
+        if (v && v.length <= 30) out.add(`${a}=${v}`);
+      }
+    }
+    return [...out].slice(0, 24);
+  };
   const nameOf = (el) => {
     const lb = el.getAttribute("aria-labelledby");
     const byId = lb ? lb.split(/\s+/).map((id) => document.getElementById(id)?.innerText ?? "").join(" ") : "";
@@ -77,6 +90,7 @@ export function probe({ scopeCss = null, sigOnly = false, maxDepth = 18, maxModu
   // (this runs in the page and cannot import them; content-key.test.mjs holds the two equal).
   const contentKeyOf = (root) => {
     const TOKENS = [
+      [/\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{8,}\b/gi, "<id>"],
       [/\b\d{4}-\d{2}-\d{2}(?:[T ]\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?\b/g, "<date>"],
       [/\b\d{1,2}(?::\d{2}){1,2}\s*(?:[AaPp]\.?[Mm]\.?)?(?![\w:])|\b\d{1,2}\s*[AaPp]\.?[Mm]\.?(?!\w)/g, "<time>"],
       [/\b\d{1,4}[/.]\d{1,2}(?:[/.]\d{2,4})?\b/g, "<date>"],
@@ -86,7 +100,10 @@ export function probe({ scopeCss = null, sigOnly = false, maxDepth = 18, maxModu
       [/\d+(?:[.,]\d+)*/g, "#"],
     ];
     const data = (s) => TOKENS.reduce((acc, [re, to]) => acc.replace(re, to), s);
-    const norm = (s) => data(text(s, 60)).toLowerCase().replace(/\d+/g, "#");
+    // `mask`: the text of the repeated trigger that opened this surface (a column's name) reads
+    // <item>, so the menus of two columns key alike (bound.mjs `maskItem`)
+    const itemRe = mask && mask.length > 1 ? new RegExp(`(?<![\\p{L}\\d])${mask.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}\\d])`, "gu") : null;
+    const norm = (s) => data((itemRe ? text(s, 200).replace(itemRe, "<item>") : text(s, 200)).slice(0, 60)).toLowerCase().replace(/\d+/g, "#");
     const byIds = (ids) => (ids ? ids.split(/\s+/).map((id) => document.getElementById(id)?.innerText ?? "").join(" ") : "");
     const titleEl = root.querySelector("h1,h2,h3,h4,h5,h6,[role=heading]");
     const title = norm(root.getAttribute?.("aria-label") || byIds(root.getAttribute?.("aria-labelledby")) || (titleEl && visible(titleEl) ? titleEl.innerText : ""));
@@ -171,6 +188,7 @@ export function probe({ scopeCss = null, sigOnly = false, maxDepth = 18, maxModu
       // a choice inside a picker: safety.mjs fires a money-word choice here and judges it by its requests
       inPicker: !!el.parentElement?.closest("[role=listbox],[role=menu],[role=radiogroup],[role=tree],[role=grid][aria-multiselectable],select,datalist"),
       cardLike: !el.matches(SEL),
+      hint: hintOf(el),
       rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) },
     });
   }

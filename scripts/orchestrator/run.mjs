@@ -14,7 +14,7 @@
 //             [--strict-scope]                                     exit 4 when the map matches < 50% of entries or walked nodes
 //             [--entries-from <file>]                              entry pages: one URL per line, or a JSON list / route map
 //             [--no-interactions]                                  clicks only (no right-click, keys, drags, forms, uploads)
-//             [--row-sample K]                                     interactions per data-row template and kind (default 2)
+//             [--row-sample K]                                     interactions per data-row template and kind, and clicks per repeated trigger group (default 2)
 //     supervise [explore flags] [--chunk N] [--poll 30] [--min-cookies 1] [--max-wait <min>] [--state <file>]
 //               [--login-cdp <url>] [--domain <site>] [--check-url <url>]
 //                                     explore in chunks to frontier 0; on a lost login waits, re-exports the
@@ -23,7 +23,9 @@
 //     requeue <nodeId> | requeue --failed | requeue --gaps [--reason <r>] | requeue --kind overlay,modal,menu,state | requeue --risky
 //             | requeue --shallow                                 every node closed shallowly back on the frontier for a full walk
 //     dedupe [--dry-run]                                           merge states an older walk minted per data row (one per
-//                                                                  person, date or shift) into one node per row template
+//                                                                  person, date or shift) into one node per row template, and
+//                                                                  overlays minted per repeated click trigger (a menu per column
+//                                                                  header, per page) into one per item set; strips generated ids
 //     gap <nodeId> --reason "..."                                  corrections; --gaps puts back every gap with a retryable reason
 //                                                                  (and write-only nodes whose writes were page-load reads);
 //                                                                  --risky puts back every node with an element held by a name
@@ -57,7 +59,7 @@ import { parseArgs } from "node:util";
 import { DISCOVERY } from "../lib/pw.mjs";
 import { finish, loadState, nextUnit, packet, plan, progress, saveState, writePacket } from "./build.mjs";
 import { compare, pairNodes, readPairMap, toMarkdown } from "./compare.mjs";
-import { dedupeRows } from "./bound.mjs";
+import { dedupeClicks, dedupeRows } from "./bound.mjs";
 import { breadcrumbFromAria, edgeId, isRetryableReason, tagScopes } from "./graph.mjs";
 import { open, save } from "./store.mjs";
 import { countsLine, report, verify, verifyCounts, writePairs } from "./verify.mjs";
@@ -368,12 +370,15 @@ switch (cmd) {
   }
   case "dedupe": {
     const r = dedupeRows(g.data, { dryRun: o["dry-run"], edgeId });
-    for (const k of r.kept) say(`${o["dry-run"] ? "would keep" : "kept"} ${k.id} ${k.label} (${k.merged} merged into it)`);
-    if (!o["dry-run"] && r.collapsed) {
+    // second pass: overlays minted per repeated click trigger (a column menu per column and page)
+    const c = dedupeClicks(g.data, { dryRun: o["dry-run"], edgeId, skip: new Set(o["dry-run"] ? r.removed : []) });
+    for (const k of [...r.kept, ...c.kept]) say(`${o["dry-run"] ? "would keep" : "kept"} ${k.id} ${k.label} (${k.merged} merged into it)`);
+    if (!o["dry-run"] && (r.collapsed || c.collapsed || c.relabelled)) {
       save(g, dir);
-      g.signal("graph.deduped", { groups: r.groups, collapsed: r.collapsed });
+      g.signal("graph.deduped", { groups: r.groups + c.groups, collapsed: r.collapsed + c.collapsed });
     }
     say(`${o["dry-run"] ? "would collapse" : "collapsed"} ${r.collapsed} data-row node(s) into ${r.groups} sampled node(s)`);
+    say(`${o["dry-run"] ? "would collapse" : "collapsed"} ${c.collapsed} click-trigger overlay node(s) into ${c.groups} sampled node(s); ${c.relabelled} label(s) ${o["dry-run"] ? "would lose" : "lost"} a generated id`);
     break;
   }
   case "gap": {
