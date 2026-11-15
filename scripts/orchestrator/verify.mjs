@@ -28,7 +28,8 @@
 // at }) plus a detail file under <clone dir>/verify/<clone node>/, and the clone graph node gets
 // verify: { ref, <each check>, passed, at }. A node is verified only when every applicable check
 // passed with its record on disk. A reference capture that predates a check (no styles.json, no
-// widths.json) skips it with that reason, never passes it.
+// widths.json) skips it with that reason, never passes it; so do reference labels read under older
+// readLabels rules (info.labelsVersion below LABELS_VERSION): "stale labels, run O relabel".
 
 import { execFile } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -42,6 +43,7 @@ import { REPO, SRGB_ARGS, playwright, settle } from "../lib/pw.mjs";
 import { keyPaths, template } from "../qa/api_diff.mjs";
 import { deadControls, inspect, unnamed } from "../qa/human_eye_lib.mjs";
 import { readLabels } from "../qa/labels.mjs";
+import { staleLabels } from "./relabel.mjs";
 import { edgeDiff, interactionsReason, pairNodes } from "./compare.mjs";
 import { UNSCOPED } from "./graph.mjs";
 import { toSrgb } from "./png-color.mjs";
@@ -53,6 +55,8 @@ const QA = join(here, "..", "qa");
 
 export const CHECKS = ["pixels", "structure", "style", "human_eye", "widths", "api", "interactions", "writes"];
 const NA = "not applicable";
+/** The widths check's reason for a reference node whose widths.json predates the current label rules. */
+export const STALE_LABELS = "skipped: stale labels, run O relabel";
 
 // ---------- PNG (no dependency: the repo has no pixelmatch or pngjs) ----------
 
@@ -898,6 +902,8 @@ export async function verify({
         const refWidths = readJson(art && join(art, "widths.json"));
         const at = Object.keys(refWidths?.widths ?? {}).filter((w) => refWidths.widths[w]).map(Number);
         if (!at.length) skip("widths", "ref widths not captured: re-walk the node with this walker");
+        // Labels read under older readLabels rules would fail (or pass) on the rules, not the clone.
+        else if (staleLabels(rn)) skip("widths", STALE_LABELS);
         else {
           const cloneAt = await labelsAtWidths(page, at, refWidths.height ?? height, refWidths.scope ? scopeCss : null);
           const d = widthsDiff(refWidths, cloneAt, widthAllow);

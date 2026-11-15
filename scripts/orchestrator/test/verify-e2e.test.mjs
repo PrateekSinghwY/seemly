@@ -15,7 +15,8 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { decodePng, pixelDiff } from "../verify.mjs";
+import { LABELS_VERSION } from "../../qa/labels.mjs";
+import { STALE_LABELS, decodePng, pixelDiff } from "../verify.mjs";
 import { startPair } from "./fixture/pair.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -88,6 +89,7 @@ test("verify catches label, pixels, request, style, widths, ws read, a dead moda
     writeFileSync(wsMap, JSON.stringify({ "/shifts/list": { method: "GET", path: "/api/shifts" }, "/notes/count": { method: "GET", path: "/api/notes/count" } }));
     const refHome = JSON.parse(readFileSync(join(ref.dir, "graph.json"), "utf8")).nodes[home.ref.id];
     for (const f of ["styles.json", "widths.json"]) assert.ok(existsSync(join(ref.dir, refHome.info.artifacts, f)), `the walker saved ${f}`);
+    assert.equal(refHome.info.labelsVersion, LABELS_VERSION, "the walker stamps the label rules it read widths.json by");
 
     const v = await O(["verify", "--ref", ref.dir, "--clone", clone.dir, "--masks", masks, "--writes", writes, "--ws-map", wsMap, "--dead-controls"]);
     assert.equal(v.code, 1, `verify exits 1 when a pair fails:\n${v.out}`);
@@ -195,6 +197,21 @@ test("verify catches label, pixels, request, style, widths, ws read, a dead moda
     const one = await O(["verify", "--ref", ref.dir, "--clone", clone.dir, "--node", reports.ref.id, "--masks", masks, "--writes", writes, "--ws-map", wsMap]);
     assert.equal(one.code, 0, one.out);
     assert.equal(one.out.split("\n").filter((l) => /^[✓✗] /.test(l)).length, 1);
+
+    // reference labels read under older rules: widths is skipped (never passed, never failed)
+    // until `O relabel`, and status says so; every other check runs as before
+    const rgPath = join(ref.dir, "graph.json");
+    const rg = JSON.parse(readFileSync(rgPath, "utf8"));
+    rg.nodes[reports.ref.id].info.labelsVersion = 1;
+    writeFileSync(rgPath, JSON.stringify(rg));
+    const stale = await O(["verify", "--ref", ref.dir, "--clone", clone.dir, "--node", reports.ref.id, "--masks", masks, "--writes", writes, "--ws-map", wsMap]);
+    assert.equal(stale.code, 1, `a skipped check leaves the node unverified:\n${stale.out}`);
+    const sv2 = JSON.parse(readFileSync(join(clone.dir, "graph.json"), "utf8")).nodes[reports.clone.id].verify;
+    assert.equal(sv2.widths.status, "skipped");
+    assert.equal(sv2.widths.reason, STALE_LABELS);
+    assert.equal(sv2.passed, false);
+    for (const c of ["pixels", "structure", "style", "api"]) assert.equal(sv2[c].status, "pass", `${c} still runs: ${sv2[c].reason}`);
+    assert.match((await O(["status", "--dir", ref.dir])).out, /LABELS\s+1 node\(s\) with stale labels/);
   } finally {
     await sites.close();
   }

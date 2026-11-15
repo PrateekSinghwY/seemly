@@ -16,7 +16,8 @@
 //
 // No --workers: store.mjs rewrites graph.json whole from each process's in-memory copy, with no
 // lock or merge, so two explores on one graph dir lose each other's nodes. Parallel walks use one
-// supervise per dir copy (`--dir <copy> --only-prefix /area`), as explore always has.
+// supervise per dir copy (`--dir <copy> --only-prefix /area`), as explore always has. It writes
+// <dir>/supervise.pid while it runs (walk-lock.mjs).
 
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync, renameSync, rmSync } from "node:fs";
@@ -26,6 +27,7 @@ import { fileURLToPath } from "node:url";
 import { DISCOVERY, playwright } from "../lib/pw.mjs";
 import { Graph } from "./graph.mjs";
 import { sessionState } from "./page-probe.mjs";
+import { markSupervise } from "./walk-lock.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const RUN = join(here, "run.mjs");
@@ -177,7 +179,10 @@ export async function main(argv) {
   };
   const explorePass = pass.filter((a, i) => !(a === "--max-nodes" || a.startsWith("--max-nodes=") || (i > 0 && pass[i - 1] === "--max-nodes")));
   if (own["relogin-wait"] !== undefined) log("note: --relogin-wait ignored; supervise waits for the sign-in itself");
-  const env = { ...(stateFile ? { SEEMLY_STORAGE_STATE: stateFile } : {}), SEEMLY_AGENT: process.env.SEEMLY_AGENT ?? "supervise" };
+  // supervise.pid for the whole run (idle between chunks too), so `O relabel` never rewrites the
+  // dir under it; each chunk's explore knows it is this supervise's own (walk-lock.mjs).
+  markSupervise(dir);
+  const env = { ...(stateFile ? { SEEMLY_STORAGE_STATE: stateFile } : {}), SEEMLY_AGENT: process.env.SEEMLY_AGENT ?? "supervise", SEEMLY_SUPERVISE_PID: String(process.pid) };
 
   const runChunk = (n) =>
     run([RUN, "explore", "--dir", dir, ...explorePass.filter((a, i) => !(a === "--dir" || (i > 0 && explorePass[i - 1] === "--dir"))), "--max-nodes", String(chunk)], {

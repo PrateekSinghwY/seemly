@@ -28,7 +28,7 @@ import { similarity } from "./algorithms.mjs";
 import { ROW_SAMPLE, STATE_BOUND, admit, clickGroups, inScope, maskItem, normaliseData, repeatGroup, rowId, rowSampler, stripGenerated } from "./bound.mjs";
 import { KEYED_KINDS, scopeByRules } from "./graph.mjs";
 import { INTERACTION_UNFIRED, LISTENER_HOOK, focusOrder, interactionInvariant, locateFor, perform, readShortcuts, replayEdge, runInteractions } from "./interactions.mjs";
-import { DEFAULT_WIDTHS, readLabels } from "../qa/labels.mjs";
+import { DEFAULT_WIDTHS, LABELS_VERSION, readLabels } from "../qa/labels.mjs";
 import { FLOATING_SEL, clearMarks, markFloating, newOverlays, openFloating, openOnLoad, probe, sessionState, styleManifest } from "./page-probe.mjs";
 import { AllowedLog, NeverOpen, RequestClassifier, classify, classifyFrame, pairFrames, parseFrame, sessionEndingUrl } from "./safety.mjs";
 import { TRANSIENT_ERR, failureReason, markGap } from "./gaps.mjs";
@@ -623,6 +623,7 @@ export async function explore(g, dir, opts = {}) {
         await page.setViewportSize(vp).catch(() => {});
       }
       writeFileSync(join(art, "widths.json"), JSON.stringify(at));
+      g.annotate(node.id, { labelsVersion: LABELS_VERSION });
     }
     writeFileSync(join(art, "inventory.json"), JSON.stringify({ id: node.id, url: node.url, state: node.state, kind: node.kind, sameAsParent: parent.id, requests: [], candidates: [], interactions: [], invariant: "ok" }, null, 1));
     g.annotate(node.id, { artifacts: rel, sameAsParent: parent.id, interactive: 0 });
@@ -1073,7 +1074,8 @@ export async function explore(g, dir, opts = {}) {
     const labelsAt = await captureWidths(n, scopeCss);
     if (labelsAt) writeFileSync(join(art, "widths.json"), JSON.stringify(labelsAt));
     const wsReads = writeWs(art, frames);
-    g.annotate(n.id, { title: r.title, heading: r.heading, interactive: r.candidates.length, artifacts: rel, scope: scopeCss, overflowX: r.overflowX, wsCalls: wsReads.length || undefined });
+    // labelsVersion: the readLabels rules widths.json was read by (`O relabel` updates older ones).
+    g.annotate(n.id, { ...(labelsAt ? { labelsVersion: LABELS_VERSION, needsRecapture: undefined } : {}), title: r.title, heading: r.heading, interactive: r.candidates.length, artifacts: rel, scope: scopeCss, overflowX: r.overflowX, wsCalls: wsReads.length || undefined });
     g.rescope(n.id);
 
     // Out of the walk's scope (--scope, without --expand-out): recorded, not expanded. An entry

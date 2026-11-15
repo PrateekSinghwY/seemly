@@ -382,7 +382,17 @@ file inputs are fired as forms and uploads (below), not clicked.
 Each node also saves what Phase D compares later: `styles.json` (the computed-style manifest of
 every interactive, heading and landmark element, plus an overlay's box) and `widths.json` (the
 structural labels at the capture width and at each sweep width, 1024 to 2560; `--widths
-off|<list>`).
+off|<list>`), stamped `info.labelsVersion` with the `qa/labels.mjs` rules it was read by.
+
+**Saved labels follow the rules, without a re-walk.** When `qa/labels.mjs` changes what a label
+is, it bumps `LABELS_VERSION`, and every node saved before is "stale labels" in `O status`
+(`LABELS` line). Stop the walk on that dir (no `supervise.pid` or live `walk.lock`; relabel refuses
+otherwise), then `O relabel --dir <graph> [--dry-run]`: each node's `dom.html` is loaded offline
+(JavaScript off, every request aborted) at each saved width, every saved label is mapped to what the
+current rules read from the element that carried it, and widths.json is rewritten and stamped. A
+node with no saved DOM, or with a label the offline DOM cannot account for (text only a missing
+stylesheet hid, two controls that now read differently), is left untouched and marked
+`needs-recapture`; `O requeue --needs-recapture` and resume the walk to re-capture those.
 
 What the walker guarantees per node (`explore.mjs`, each with a test in `test/walker.test.mjs`):
 - **Pre-state restore before each fire.** The node's pre-state (URL, skeleton, open overlays) is
@@ -640,7 +650,9 @@ never checked.
 An overlay or modal node is judged on its own region: pixels on its bounding box, structure,
 style, widths and human eye on its subtree. A reference node walked before a check existed (no
 `styles.json`, no `widths.json`) is skipped with `ref style not captured` / `ref widths not
-captured`, never passed: re-walk it.
+captured`, never passed: re-walk it. A reference node whose labels were read under older label
+rules is skipped `skipped: stale labels, run O relabel` on `widths` (never passed, never failed):
+run `O relabel` on the reference dir (section 4), and re-walk what it marks `needs-recapture`.
 
 The five QA scripts (`scripts/qa/`, each writes its check record; each is proven by eval
 `X-QA` to fail on its defect), plus `frame_diff.mjs` for video-mode builds (eval `X-FRAME`), and when they run, so they cost what they are worth:

@@ -6,10 +6,25 @@
 export const DEFAULT_WIDTHS = [1024, 1280, 1366, 1440, 1536, 1680, 1920, 2560];
 
 /**
+ * The rules readLabels reads names by. A widths.json written under an older version holds labels
+ * the current rules would not read; the walker stamps `info.labelsVersion` on each node it saves
+ * labels for, and `O relabel` recomputes older ones from the saved DOM. Bump it whenever a change
+ * here changes what a page's labels are, and teach `pairs` mode the old rule (relabel.mjs).
+ *   1  aria-label, else innerText (icon-font ligatures and aria-hidden text included)
+ *   2  accessible names: aria-labelledby, aria-label, content minus hidden and icon-font glyphs
+ */
+export const LABELS_VERSION = 2;
+
+/**
  * In-page (serialised by page.evaluate): self-contained. `scopeCss` reads only inside that
  * element (an overlay); it is `null` when the element is not there.
+ *
+ * `pairs: true` is for `O relabel` on a saved DOM loaded offline (no stylesheets, so visibility
+ * cannot be judged): every candidate element of each category, visible or not, as
+ * `[version-1 label, current label, visible offline]`, so a label saved under version 1 can be
+ * mapped to the one the current rules read from the same element.
  */
-export function readLabels({ scopeCss = null } = {}) {
+export function readLabels({ scopeCss = null, pairs = false } = {}) {
   const root = scopeCss ? document.querySelector(scopeCss) : document;
   if (!root) return null;
   const visible = (el) => (el.checkVisibility ? el.checkVisibility({ opacityProperty: true, visibilityProperty: true }) : el.getClientRects().length > 0);
@@ -57,30 +72,39 @@ export function readLabels({ scopeCss = null } = {}) {
     return t;
   };
   const name = (el) => norm(norm(accName(el)) || visibleText(el) || el.getAttribute("title") || el.value || el.querySelector("img[alt]")?.alt || "");
-  const all = (sel, f = name, within = root) => [...within.querySelectorAll(sel)].filter(visible).map(f).filter(Boolean);
+  // Version 1 (relabel's `pairs` mode only): aria-label, else innerText, icon glyphs included.
+  const name1 = (el) => norm(el.getAttribute("aria-label") || el.innerText || el.getAttribute("title") || el.value || el.querySelector("img[alt]")?.alt || "");
+  const field1 = (el) => norm((el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`)?.innerText) || el.closest("label")?.innerText || el.getAttribute("aria-label") || el.getAttribute("placeholder") || el.name || "");
+  const heading = (f) => (el) => {
+    const lvl = el.getAttribute("aria-level") || el.tagName.replace(/^H/, "") || "";
+    const t = f(el);
+    return t ? `h${/^\d$/.test(lvl) ? lvl : "?"} ${t}` : "";
+  };
+  const field = (el) => {
+    const by = byIds(el, "aria-labelledby");
+    const forLabel = el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+    const wrap = el.closest("label");
+    return norm((by.length && by.map((x) => x.getAttribute("aria-label") || content(x)).join(" ")) || el.getAttribute("aria-label") || (forLabel && name(forLabel)) || (wrap && name(wrap)) || el.getAttribute("placeholder") || el.name || "");
+  };
   const NAV = "nav,header,[role=navigation],[role=banner],[role=menubar],[role=tablist]";
   const inNav = (el) => !!el.closest(NAV);
   // Controls inside table body rows are data (one per listing), not page structure: the
   // structure of a list is its header, toolbar and pager.
   const inRow = (el) => !!el.closest("tbody, [role=rowgroup] [role=row], [role=gridcell]");
-  return {
-    headings: all("h1,h2,h3,h4,h5,h6,[role=heading]", (el) => {
-      const lvl = el.getAttribute("aria-level") || el.tagName.replace(/^H/, "") || "";
-      const t = name(el);
-      return t ? `h${/^\d$/.test(lvl) ? lvl : "?"} ${t}` : "";
-    }),
-    nav: [...root.querySelectorAll(`a[href],button,[role=menuitem],[role=link],[role=button]`)].filter((el) => visible(el) && inNav(el) && el.getAttribute("role") !== "tab").map(name).filter(Boolean),
-    tabs: all("[role=tab]"),
-    buttons: [...root.querySelectorAll("button,[role=button],input[type=submit],input[type=button]")].filter((el) => visible(el) && !inNav(el) && !inRow(el)).map(name).filter(Boolean),
-    tableHeaders: all("th,[role=columnheader]"),
-    fields: [...root.querySelectorAll("input:not([type=hidden]),select,textarea")].filter((el) => visible(el) && !inRow(el)).map((el) => {
-      const by = byIds(el, "aria-labelledby");
-      const forLabel = el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
-      const wrap = el.closest("label");
-      return norm((by.length && by.map((x) => x.getAttribute("aria-label") || content(x)).join(" ")) || el.getAttribute("aria-label") || (forLabel && name(forLabel)) || (wrap && name(wrap)) || el.getAttribute("placeholder") || el.name || "");
-    }).filter(Boolean),
-    overflowX: scopeCss ? root.scrollWidth > root.clientWidth + 1 : document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+  // Per category: its candidate elements, the current rule, the version-1 rule.
+  const cats = {
+    headings: [[...root.querySelectorAll("h1,h2,h3,h4,h5,h6,[role=heading]")], heading(name), heading(name1)],
+    nav: [[...root.querySelectorAll(`a[href],button,[role=menuitem],[role=link],[role=button]`)].filter((el) => inNav(el) && el.getAttribute("role") !== "tab"), name, name1],
+    tabs: [[...root.querySelectorAll("[role=tab]")], name, name1],
+    buttons: [[...root.querySelectorAll("button,[role=button],input[type=submit],input[type=button]")].filter((el) => !inNav(el) && !inRow(el)), name, name1],
+    tableHeaders: [[...root.querySelectorAll("th,[role=columnheader]")], name, name1],
+    fields: [[...root.querySelectorAll("input:not([type=hidden]),select,textarea")].filter((el) => !inRow(el)), field, field1],
   };
+  const out = {};
+  for (const [k, [els, f, f1]] of Object.entries(cats)) out[k] = pairs ? els.map((el) => [f1(el), f(el), visible(el)]) : els.filter(visible).map(f).filter(Boolean);
+  if (pairs) return out;
+  out.overflowX = scopeCss ? root.scrollWidth > root.clientWidth + 1 : document.documentElement.scrollWidth > document.documentElement.clientWidth + 1;
+  return out;
 }
 
 export const CATEGORIES = ["headings", "nav", "tabs", "buttons", "tableHeaders", "fields"];

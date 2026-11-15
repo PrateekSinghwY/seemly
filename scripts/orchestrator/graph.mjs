@@ -455,6 +455,23 @@ export class Graph {
     return out;
   }
 
+  /**
+   * Every node `O relabel` marked `needs-recapture` (no saved DOM, or labels the saved DOM cannot
+   * account for offline) back on the frontier: the walk re-captures it and re-reads its labels.
+   */
+  requeueNeedsRecapture() {
+    const out = [];
+    for (const n of Object.values(this.data.nodes)) {
+      if (!n.info?.needsRecapture) continue;
+      n.info.lastNeedsRecapture = n.info.needsRecapture;
+      delete n.info.needsRecapture;
+      n.attempts = 0;
+      this.setStatus(n.id, "frontier", null);
+      out.push(n);
+    }
+    return out;
+  }
+
   /** Nodes on one canonical URL, to match a state against ones already seen there. */
   nodesAt(url) {
     const c = this.canon(url);

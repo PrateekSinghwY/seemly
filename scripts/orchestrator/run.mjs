@@ -27,6 +27,10 @@
 //     requeue <nodeId> | requeue --failed | requeue --gaps [--reason <r>] | requeue --kind overlay,modal,menu,state | requeue --risky
 //             | requeue --shallow                                 every node closed shallowly back on the frontier for a full walk
 //             | requeue --partial                                 every node closed partial (node budget spent) back on the frontier
+//             | requeue --needs-recapture                         every node relabel could not relabel offline, back for a re-walk
+//     relabel [--node id] [--dry-run]                              saved widths.json labels up to the current readLabels rules,
+//                                                                  offline from each node's dom.html (relabel.mjs); refuses while
+//                                                                  a walk writes the dir (supervise.pid / walk.lock)
 //     compact-allowed [--dry-run]                                  rewrite allowed-posts.jsonl to one row per rule (method, path template, phase)
 //     dedupe [--dry-run]                                           merge states an older walk minted per data row (one per
 //                                                                  person, date or shift) into one node per row template, and
@@ -70,6 +74,9 @@ import { breadcrumbFromAria, edgeId, isRetryableReason, tagScopes } from "./grap
 import { open, save } from "./store.mjs";
 import { countsLine, report, verify, verifyCounts, writePairs } from "./verify.mjs";
 import { writeLive, writeTree } from "./views.mjs";
+import { acquire } from "./walk-lock.mjs";
+import { labelCounts } from "./relabel.mjs";
+import { LABELS_VERSION } from "../qa/labels.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const skill = dirname(dirname(here));
@@ -142,6 +149,7 @@ const { values: o, positionals } = parseArgs({
     "no-interactions": { type: "boolean", default: false },
     "row-sample": { type: "string" },
     "dry-run": { type: "boolean", default: false },
+    "needs-recapture": { type: "boolean", default: false },
   },
 });
 const dir = o.dir;
@@ -178,6 +186,9 @@ function status(g, scope) {
   // A partial node ran out of its node budget: closed, not walked in full.
   const pc = g.partialCounts();
   if (pc.nodes && !scope) say(`PARTIAL ${pc.nodes} node(s) closed partial, ${pc.left} element(s) left unfired (budget); requeue --partial walks them again`);
+  // Labels saved under older readLabels rules: verify skips their widths check until relabelled.
+  const lc = labelCounts(g, dir);
+  if ((lc.stale || lc.needsRecapture) && !scope) say(`LABELS  ${lc.stale} node(s) with stale labels (older than v${LABELS_VERSION}): run O relabel${lc.needsRecapture ? ` · ${lc.needsRecapture} need recapture: requeue --needs-recapture` : ""}`);
   if (pr) say(`BUILD   ${pr.units} units: ${UNITS(pr)}`);
   // Phase D counts come from pairs.json, the clone graph and the check records on disk.
   const vdir = o.clone?.[0] ?? dir;
@@ -264,6 +275,19 @@ if (cmd === "compact-allowed") {
   say(`${o["dry-run"] ? "would compact" : "compacted"} ${p}: ${r.before} row(s) -> ${r.after} rule(s)${r.dropped ? `, ${r.dropped} unreadable dropped` : ""}`);
   process.exit(0);
 }
+// relabel holds the dir itself (walk.lock) and opens the graph only once it knows no walk writes it.
+if (cmd === "relabel") {
+  const { relabel } = await import("./relabel.mjs");
+  const { DirBusy } = await import("./walk-lock.mjs");
+  try {
+    await relabel({ dir, node: o.node ?? null, dryRun: o["dry-run"], log: say });
+    process.exit(0);
+  } catch (e) {
+    if (!(e instanceof DirBusy)) throw e;
+    say(e.message);
+    process.exit(5);
+  }
+}
 // Who the live view shows for this process: --agent, else the walker's area, else the command.
 process.env.SEEMLY_AGENT ||= o.agent ?? (cmd === "explore" ? `walker${o["only-prefix"]?.length ? ` ${o["only-prefix"].join(",")}` : ""}` : `${cmd}-${process.pid}`);
 const g = open(dir, {});
@@ -298,6 +322,9 @@ switch (cmd) {
     const waitMin = o["relogin-wait"] ? +o["relogin-wait"] : 0;
     const stateFile = process.env.SEEMLY_STORAGE_STATE;
     let maxNodes = o["max-nodes"] ? +o["max-nodes"] : Infinity;
+    // walk.lock while this walk writes the dir: `O relabel` refuses to run under it (walk-lock.mjs).
+    const unlock = acquire(dir, "explore");
+    process.once("exit", unlock);
     for (;;) {
       try {
         const r = await explore(g, dir, {
@@ -384,6 +411,15 @@ switch (cmd) {
       save(g, dir);
       for (const n of done) say(`requeued ${n.id} ${n.label}`);
       say(`requeued ${done.length} partial node(s) for a full walk`);
+      break;
+    }
+    // --needs-recapture: nodes relabel could not relabel offline (no saved DOM, or labels the saved
+    // DOM does not account for), walked again so their captures and labels are read fresh.
+    if (o["needs-recapture"]) {
+      const done = g.requeueNeedsRecapture();
+      save(g, dir);
+      for (const n of done) say(`requeued ${n.id} ${n.label}`);
+      say(`requeued ${done.length} needs-recapture node(s) for a re-walk`);
       break;
     }
     // --kind: nodes of those kinds with no content key (an older graph merged look-alike overlays),
