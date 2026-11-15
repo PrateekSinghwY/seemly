@@ -19,8 +19,8 @@
 //        5 stalled (three chunks in a row closed no node) · any other code an explore failed with twice.
 //
 // No --workers: store.mjs rewrites graph.json whole from each process's in-memory copy, with no
-// lock or merge, so two explores on one graph dir lose each other's nodes. Parallel walks use one
-// supervise per dir copy (`--dir <copy> --only-prefix /area`), as explore always has. It writes
+// lock, so two explores on one graph dir lose each other's nodes. Parallel walks use one
+// supervise per worker copy (`O fork`, then `--dir <copy> --only-prefix /area`) and `O merge` after. It writes
 // <dir>/supervise.pid while it runs (walk-lock.mjs).
 
 import { spawn } from "node:child_process";

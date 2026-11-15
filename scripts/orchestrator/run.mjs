@@ -84,6 +84,27 @@ const skill = dirname(dirname(here));
 const cmd = process.argv[2];
 // supervise owns its flags and passes the rest to explore, so it runs before this file's parser.
 if (cmd === "supervise") process.exit(await (await import("./supervise.mjs")).main(process.argv.slice(3)));
+// Parallel walks: `fork --dir D --out W` makes a light worker copy (graph and logs, no capture
+// folders); `merge --into D --from W...` folds the workers back (merge.mjs). Neither runs while a
+// walk holds the target.
+if (cmd === "fork" || cmd === "merge") {
+  const { values: m } = parseArgs({ args: process.argv.slice(3), options: { dir: { type: "string" }, out: { type: "string" }, into: { type: "string" }, from: { type: "string", multiple: true } } });
+  const { mergeDirs, workerCopy } = await import("./merge.mjs");
+  const target = cmd === "fork" ? m.dir : m.into;
+  if (!target || (cmd === "fork" ? !m.out : !m.from?.length)) throw new Error("usage: fork --dir <graph dir> --out <worker dir> | merge --into <graph dir> --from <worker dir>...");
+  for (const lock of ["walk.lock", "supervise.pid"]) if (cmd === "merge" && existsSync(join(target, lock))) {
+    const pid = Number(readFileSync(join(target, lock), "utf8").match(/\d+/)?.[0]);
+    let alive = false;
+    try { process.kill(pid, 0); alive = true; } catch {}
+    if (alive) throw new Error(`${target} has a walk running (${lock}, pid ${pid}); stop it before merging`);
+  }
+  if (cmd === "fork") console.log(`fork ${m.dir} -> ${m.out}: ${workerCopy(m.dir, m.out)} entries copied (no capture folders)`);
+  else {
+    const r = mergeDirs(m.into, m.from);
+    console.log(`merge ${m.from.join(", ")} -> ${m.into}: ${r.nodes} node(s) taken, ${r.folders} capture folder(s), ${r.lines} log line(s); ${r.total} nodes, frontier ${r.frontier}`);
+  }
+  process.exit(0);
+}
 // `requeue --risky` takes no value, while `explore --risky record|probe` does.
 const argv = process.argv.slice(2).map((a, i, all) => (cmd === "requeue" && a === "--risky" && (all[i + 1] === undefined || all[i + 1].startsWith("--")) ? "--risky=requeue" : a));
 const { values: o, positionals } = parseArgs({
