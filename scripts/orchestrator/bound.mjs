@@ -81,3 +81,174 @@ export function admit(bounds, raw, limit = STATE_BOUND, { anyHash = false } = {}
 export function repeatGroup(css) {
   return css.replace(/:nth-of-type\(\d+\)/g, "");
 }
+
+// ---------- data rows ----------
+
+/** Distinct members a css group needs before its elements count as data rows (a grid, a list). */
+export const ROW_MIN = 3;
+
+/** Samples fired per (row template, interaction kind) before more need a new lead each time. */
+export const ROW_SAMPLE = 2;
+
+// Data-like tokens, most specific first. Names are "Last, First" (an optional middle initial);
+// a pair followed by ", and" / ", or" is a list of words ("Show, Hide, and Filter"), not a person.
+const DATA_TOKENS = [
+  [/\b\d{4}-\d{2}-\d{2}(?:[T ]\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?\b/g, "<date>"],
+  [/\b\d{1,2}(?::\d{2}){1,2}\s*(?:[AaPp]\.?[Mm]\.?)?(?![\w:])|\b\d{1,2}\s*[AaPp]\.?[Mm]\.?(?!\w)/g, "<time>"],
+  [/\b\d{1,4}[/.]\d{1,2}(?:[/.]\d{2,4})?\b/g, "<date>"],
+  [/\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.? \d{1,2}(?:st|nd|rd|th)?(?:,? \d{4})?\b/g, "<date>"],
+  [/\b(?:Mon|Tue|Tues|Wed|Thu|Thur|Thurs|Fri|Sat|Sun)(?:day|sday|nesday|rsday|urday)?\b\.?/g, "<day>"],
+  [/\b[A-Z][\p{L}'’-]+(?: [A-Z][\p{L}'’-]+)?, [A-Z][\p{L}'’-]+(?: [A-Z]\.?)?(?![\p{L}'’-])(?!,? (?:and|or)\b)/gu, "<name>"],
+  [/\d+(?:[.,]\d+)*/g, "#"],
+];
+
+/**
+ * A title or label with its data replaced by placeholders: person names ("Last, First"), dates,
+ * weekdays, times and time ranges, numbers. "Abbott, Olivia, Sun 11/08, 6:30 PM-3:00 AM" and
+ * every other shift chip read "<name>, <day> <date>, <time>-<time>"; "Approve timecard" and
+ * "Sign-off" stay what they are. page-probe.mjs `contentKeyOf` runs the same rules in the page
+ * (it cannot import): change both together; content-key.test.mjs holds them equal.
+ */
+export function normaliseData(s) {
+  let out = String(s ?? "");
+  for (const [re, to] of DATA_TOKENS) out = out.replace(re, to);
+  return out;
+}
+
+/** The repeat groups in `list` (by `css`) with at least ROW_MIN distinct members: data rows. */
+export function rowGroups(list, cssOf = (c) => c.css) {
+  const by = new Map();
+  for (const c of list) {
+    const css = cssOf(c);
+    if (!css) continue;
+    const g = repeatGroup(css);
+    (by.get(g) ?? by.set(g, new Set()).get(g)).add(css);
+  }
+  return new Set([...by].filter(([, s]) => s.size >= ROW_MIN).map(([g]) => g));
+}
+
+/** A short stable id for a row template (a css group), for state keys. */
+export function rowId(group) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < group.length; i++) h = Math.imul(h ^ group.charCodeAt(i), 0x01000193);
+  return (h >>> 0).toString(16).padStart(8, "0");
+}
+
+/**
+ * Sampling of interactions on data rows, per (page, row template, kind), across every node of the
+ * walk: K samples, then one more only while every sample so far led somewhere new (a new
+ * template), never more than STATE_BOUND. `store` is a plain object kept in graph meta
+ * (`rowSamples`), so a resumed or chunked walk keeps its counts.
+ */
+export function rowSampler(store = {}, { k = ROW_SAMPLE, limit = STATE_BOUND } = {}) {
+  const at = (key) => (store[key] ??= { tried: 0, leads: [] });
+  return {
+    /** May one more member of this group fire? Counts it when yes. */
+    take(key) {
+      const s = at(key);
+      const ok = s.tried < k || (s.tried < limit && s.leads.length === s.tried);
+      if (ok) s.tried++;
+      return ok;
+    },
+    /** What the sample led to (a template id, or an outcome when nothing opened). */
+    lead(key, lead) {
+      const s = at(key);
+      if (!s.leads.includes(lead)) s.leads.push(lead);
+    },
+    store,
+  };
+}
+
+/**
+ * `O dedupe`: merge the states an older walk minted per data row (one per person, date or shift)
+ * into one node per (page, kind, row template, interaction kind, normalised label, template). A
+ * node qualifies when every edge into it comes from a member of one row group of one interaction
+ * kind. The keeper is a closed node with artifacts when there is one (a closed sample is kept);
+ * the others' edges are rewritten to it (self-loops dropped, duplicates merged) and they are
+ * removed. The group's row sampler is seeded as sampled, so a later walk does not re-explode it.
+ * `dryRun` changes nothing. Returns `{ groups, collapsed, kept, removed }`.
+ */
+export function dedupeRows(data, { dryRun = false, edgeId, k = ROW_SAMPLE } = {}) {
+  const N = data.nodes;
+  const E = data.edges;
+  const KEYED = new Set(["overlay", "modal", "menu", "state"]);
+  const into = new Map();
+  const members = new Map();
+  for (const e of Object.values(E)) {
+    (into.get(e.to) ?? into.set(e.to, []).get(e.to)).push(e);
+    const css = e.element?.css;
+    if (!css || !N[e.from]) continue;
+    const key = `${N[e.from].url}|${e.kind}|${repeatGroup(css)}`;
+    (members.get(key) ?? members.set(key, new Set()).get(key)).add(css);
+  }
+  const groups = new Map();
+  for (const n of Object.values(N)) {
+    if (!KEYED.has(n.kind) || n.entry) continue;
+    const es = into.get(n.id) ?? [];
+    if (!es.length) continue;
+    const keys = new Set();
+    let row = true;
+    for (const e of es) {
+      const css = e.element?.css;
+      const from = N[e.from];
+      if (!css || !from || e.kind === "navigation" || (members.get(`${from.url}|${e.kind}|${repeatGroup(css)}`)?.size ?? 0) < ROW_MIN) {
+        row = false;
+        break;
+      }
+      keys.add(`${from.url}|${e.kind}|${repeatGroup(css)}`);
+    }
+    if (!row || keys.size !== 1) continue;
+    const [sample] = keys;
+    const gk = `${n.url}|${n.kind}|${sample}|${normaliseData(n.label)}|${n.template}`;
+    (groups.get(gk) ?? groups.set(gk, { sample, nodes: [] }).get(gk)).nodes.push(n);
+  }
+  const rank = (n) => [["closed", "built", "verified"].includes(n.status) ? 0 : n.status === "frontier" ? 1 : 2, n.info?.artifacts ? 0 : 1, n.depth ?? Infinity, n.id];
+  const cmp = (a, b) => {
+    const x = rank(a);
+    const y = rank(b);
+    for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i] < y[i] ? -1 : 1;
+    return 0;
+  };
+  const out = { groups: 0, collapsed: 0, kept: [], removed: [] };
+  const mapTo = new Map();
+  for (const { sample, nodes } of groups.values()) {
+    if (nodes.length < 2) continue;
+    nodes.sort(cmp);
+    const [keep, ...rest] = nodes;
+    out.groups++;
+    out.collapsed += rest.length;
+    out.kept.push({ id: keep.id, label: normaliseData(keep.label), merged: rest.length });
+    for (const r of rest) {
+      mapTo.set(r.id, keep.id);
+      out.removed.push(r.id);
+    }
+    if (dryRun) continue;
+    const [url, kind, group] = sample.split("|");
+    data.meta.rowSamples ??= {};
+    data.meta.rowSamples[`${url}|${kind}|${group}`] = { tried: Math.max(k, data.meta.rowSamples[`${url}|${kind}|${group}`]?.tried ?? 0), leads: [keep.template] };
+    keep.depth = Math.min(...nodes.map((n) => n.depth ?? Infinity));
+    keep.label = normaliseData(keep.label);
+    keep.info = { ...(keep.info ?? {}), rowGroup: group, merged: rest.map((r) => r.id) };
+  }
+  if (dryRun || !mapTo.size) return out;
+  const edges = {};
+  for (const e of Object.values(E)) {
+    const from = mapTo.get(e.from) ?? e.from;
+    const to = mapTo.get(e.to) ?? e.to;
+    if (from === to && (mapTo.has(e.from) || mapTo.has(e.to))) continue;
+    const id = from === e.from && to === e.to ? e.id : edgeId({ from, to, kind: e.kind, element: e.element });
+    if (edges[id]) continue;
+    edges[id] = { ...e, id, from, to };
+  }
+  data.edges = edges;
+  for (const id of mapTo.keys()) delete N[id];
+  for (const t of Object.values(data.templates)) {
+    t.members = t.members.filter((id) => N[id]);
+    t.inDegree = 0;
+  }
+  for (const e of Object.values(edges)) {
+    const t = data.templates[N[e.to]?.template];
+    if (t) t.inDegree++;
+  }
+  return out;
+}

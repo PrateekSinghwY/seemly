@@ -73,8 +73,20 @@ export function probe({ scopeCss = null, sigOnly = false, maxDepth = 18, maxModu
   // What a surface says, not how it is built: its title plus the sorted set of its controls'
   // accessible names, digits as #. Data is left out (controls in rows, cells, options and tree
   // items, field values, long runs of look-alike siblings), so a list does not split per row.
+  // Data-like tokens to placeholders before hashing: bound.mjs `normaliseData`, the same rules
+  // (this runs in the page and cannot import them; content-key.test.mjs holds the two equal).
   const contentKeyOf = (root) => {
-    const norm = (s) => text(s, 60).toLowerCase().replace(/\d+/g, "#");
+    const TOKENS = [
+      [/\b\d{4}-\d{2}-\d{2}(?:[T ]\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?\b/g, "<date>"],
+      [/\b\d{1,2}(?::\d{2}){1,2}\s*(?:[AaPp]\.?[Mm]\.?)?(?![\w:])|\b\d{1,2}\s*[AaPp]\.?[Mm]\.?(?!\w)/g, "<time>"],
+      [/\b\d{1,4}[/.]\d{1,2}(?:[/.]\d{2,4})?\b/g, "<date>"],
+      [/\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.? \d{1,2}(?:st|nd|rd|th)?(?:,? \d{4})?\b/g, "<date>"],
+      [/\b(?:Mon|Tue|Tues|Wed|Thu|Thur|Thurs|Fri|Sat|Sun)(?:day|sday|nesday|rsday|urday)?\b\.?/g, "<day>"],
+      [/\b[A-Z][\p{L}'’-]+(?: [A-Z][\p{L}'’-]+)?, [A-Z][\p{L}'’-]+(?: [A-Z]\.?)?(?![\p{L}'’-])(?!,? (?:and|or)\b)/gu, "<name>"],
+      [/\d+(?:[.,]\d+)*/g, "#"],
+    ];
+    const data = (s) => TOKENS.reduce((acc, [re, to]) => acc.replace(re, to), s);
+    const norm = (s) => data(text(s, 60)).toLowerCase().replace(/\d+/g, "#");
     const byIds = (ids) => (ids ? ids.split(/\s+/).map((id) => document.getElementById(id)?.innerText ?? "").join(" ") : "");
     const titleEl = root.querySelector("h1,h2,h3,h4,h5,h6,[role=heading]");
     const title = norm(root.getAttribute?.("aria-label") || byIds(root.getAttribute?.("aria-labelledby")) || (titleEl && visible(titleEl) ? titleEl.innerText : ""));

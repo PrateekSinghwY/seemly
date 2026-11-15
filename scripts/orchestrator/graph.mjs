@@ -82,6 +82,11 @@ export function nodeId(url, signature, state = "", opts = {}, contentKey = null)
   return "n_" + createHash("sha1").update(`${canonicalUrl(url, opts)}\n${state}\n${signature.join("\n")}${key}`).digest("hex").slice(0, 12);
 }
 
+/** Edge identity: one edge per (from, to, kind, element name). */
+export function edgeId({ from, to, kind, element = {} }) {
+  return "e_" + createHash("sha1").update(`${from}|${to}|${kind}|${element?.name ?? element?.selector ?? ""}`).digest("hex").slice(0, 12);
+}
+
 /** The node kinds whose identity includes a content key (pages keep URL + skeleton). */
 export const KEYED_KINDS = ["overlay", "modal", "menu", "state"];
 
@@ -453,7 +458,7 @@ export class Graph {
     if (!EDGE_KINDS.includes(kind)) throw new Error(`bad edge kind ${kind}`);
     this.node(from);
     this.node(to);
-    const id = "e_" + createHash("sha1").update(`${from}|${to}|${kind}|${element.name ?? element.selector ?? ""}`).digest("hex").slice(0, 12);
+    const id = edgeId({ from, to, kind, element });
     if (this.data.edges[id]) return { edge: this.data.edges[id], isNew: false };
     const edge = { id, from, to, kind, element, request, reversible, cost: EDGE_COST[kind], ...(via ? { via } : {}) };
     this.data.edges[id] = edge;

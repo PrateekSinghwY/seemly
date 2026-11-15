@@ -22,7 +22,7 @@
 
 import { createHash } from "node:crypto";
 
-import { STATE_BOUND, repeatGroup } from "./bound.mjs";
+import { STATE_BOUND, normaliseData, repeatGroup, rowGroups, rowSampler } from "./bound.mjs";
 import { classify } from "./safety.mjs";
 
 /** The kinds an element can have an outcome for, in the order the walker fires them. */
@@ -584,11 +584,28 @@ const SPACE_ROLES = new Set(["checkbox", "switch", "radio"]);
  *   writesAllowed              --allow-post given: uploads fire
  *   risky, pending             the click loop's safety rule and its pending-writes writer
  *   sample                     repeated siblings tried before sampling stops (SAMPLE)
+ *   rows                       data-row sampler (bound.mjs `rowSampler`, kept in graph meta) and
+ *   leadOf(res)                what one fired sample led to (a template), for its "new lead" rule
+ * A target that belongs to a data-row group (ROW_MIN or more members of one css template: one chip
+ * per shift, one form per employee) fires as a sample of its row template: K per (page, template,
+ * kind), more only while each leads somewhere new, the rest `sampled-out`. What it opens is named
+ * by the row template (`fire(..., { row })`), never by the row's names, dates or times.
  * Returns `{ rows, targets, keys }`: one row per target, the keys this node fired.
  */
 export async function runInteractions(ctx) {
   const { page, n, scopeCss, outcomes, fire, reset, inherited = new Set(), seen = new Set(), templateSampled = false, shortcuts = null, writesAllowed = false, risky = "record", pending = () => {}, sample = 5 } = ctx;
+  const rows_ = ctx.rows ?? rowSampler();
+  const leadOf = ctx.leadOf ?? ((res) => (res.children ?? []).join(",") || res.outcome);
   const t = await page.evaluate(interactionTargets, { scopeCss });
+  // Data rows per kind: a group of ROW_MIN or more look-alike targets (forms by their own css).
+  const rowsOf = { contextmenu: rowGroups(t.contextmenu), dblclick: rowGroups(t.dblclick), drag: rowGroups(t.drag), form: rowGroups(t.forms) };
+  const rowKey = (kind, grp) => `${n.url}|${kind}|${grp}`;
+  /** The row group `css` samples for, or null when it is no data row; "out" when sampled out. */
+  const rowOf = (kind, css) => {
+    const grp = repeatGroup(css ?? "");
+    if (!rowsOf[kind]?.has(grp)) return null;
+    return rows_.take(rowKey(kind, grp)) ? grp : "out";
+  };
   const rows = [];
   const keys = [];
   const norm = (s) => String(s ?? "").replace(/\d+([.,]\d+)*/g, "#");
@@ -631,10 +648,16 @@ export async function runInteractions(ctx) {
           unfired(r, "sampled-out");
           continue;
         }
+        const grp = rowOf(kind, c.css);
+        if (grp === "out") {
+          unfired(r, "sampled-out");
+          continue;
+        }
         tried++;
-        const res = await fire(kind, c, { element: { role: c.role, name: c.name, css: c.css, nth: c.nth } });
+        const res = await fire(kind, c, { element: { role: c.role, name: c.name, css: c.css, nth: c.nth }, row: grp });
         if (res.children?.length) opened = true;
         leads.add((res.children ?? []).join(",") || res.outcome);
+        if (grp) rows_.lead(rowKey(kind, grp), leadOf(res));
         push(r, res);
       }
     }
@@ -651,11 +674,18 @@ export async function runInteractions(ctx) {
       unfired(r, g);
       continue;
     }
+    const grp = rowOf("drag", c.css);
+    if (grp === "out") {
+      unfired(r, "sampled-out");
+      continue;
+    }
     const res = await fire("drag", c, {
       element: { role: c.role, name: c.name, css: c.css, nth: c.nth, dx, dy },
-      change: { read: () => page.evaluate(geometry, c.css), label: `drag: ${c.name}` },
+      change: { read: () => page.evaluate(geometry, c.css), label: `drag: ${grp ? normaliseData(c.name) : c.name}` },
       stateKey: `drag:${c.role}:${c.name}`,
+      row: grp,
     });
+    if (grp) rows_.lead(rowKey("drag", grp), leadOf(res));
     push(r, res);
     if (res.outcome !== "inert" && !res.unfired) await reset();
   }
@@ -695,12 +725,20 @@ export async function runInteractions(ctx) {
   // forms: (a) submit empty, (b) valid values then submit, (c) one invalid value per constraint
   for (const f of t.forms) {
     const fc = { role: f.role, name: f.name, css: f.css };
+    // A form per data row (one per employee) is sampled as a whole: every case of it, or none.
+    const grp = rowOf("form", f.css);
+    if (grp === "out") {
+      unfired(row(f.submit ? "submit" : "input", f.submit ? { role: f.submit.role, name: f.submit.name, css: f.submit.css } : fc, { case: "row" }), "sampled-out");
+      continue;
+    }
+    const fname = grp ? normaliseData(f.name) : f.name;
+    const formLeads = [];
     // A validation state is named by what it shows (invalid fields, messages, submit disabled):
     // the same message reached two ways is one node, and pairs with the clone's by that name.
     const state = {
       read: () => page.evaluate(formState, f.css).then((x) => x?.digest ?? null),
-      key: (d) => `form:${f.name}:${createHash("sha1").update(String(d)).digest("hex").slice(0, 10)}`,
-      label: `form: ${f.name}`,
+      key: (d) => `form:${fname}:${createHash("sha1").update(String(grp ? normaliseData(d) : d)).digest("hex").slice(0, 10)}`,
+      label: `form: ${fname}`,
     };
     const sub = f.submit;
     const safe = sub ? classify(sub) : null;
@@ -711,13 +749,15 @@ export async function runInteractions(ctx) {
       const r = row(kind, c, extra);
       const g = gate(kind, c, extra.case);
       if (g) return unfired(r, g);
-      const res = await fire(kind, c, { element: { ...element, case: extra.case }, change: state, stateKey: `${kind}:${extra.case}:${f.name}` });
+      const res = await fire(kind, c, { element: { ...element, case: extra.case }, change: state, stateKey: `${kind}:${extra.case}:${f.name}`, row: grp });
+      if (grp) formLeads.push(leadOf(res));
       push(r, { ...res, form: f.name });
       await reset();
     };
     if (f.search) {
       const field = f.fields.find((x) => x.type !== "checkbox" && !x.options) ?? f.fields[0];
       await go("input", fc, { case: "search" }, { ...fc, fills: [{ css: field.css, role: field.role, name: field.name, how: "fill", value: "a" }], enter: true });
+      if (grp) rows_.lead(rowKey("form", grp), formLeads.join("|"));
       continue;
     }
     const subRow = sub ? { role: sub.role, name: sub.name, css: sub.css } : null;
@@ -746,6 +786,7 @@ export async function runInteractions(ctx) {
         else await go("input", fc, extra, { ...fc, fills: theFills });
       }
     }
+    if (grp) rows_.lead(rowKey("form", grp), formLeads.join("|"));
   }
 
   // file inputs: accept list and size limit always; uploads only where writes are allowed

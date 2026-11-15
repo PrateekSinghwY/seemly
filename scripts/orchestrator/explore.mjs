@@ -25,7 +25,7 @@ import { join } from "node:path";
 
 import { openReference, settle } from "../lib/pw.mjs";
 import { similarity } from "./algorithms.mjs";
-import { STATE_BOUND, admit, inScope, repeatGroup } from "./bound.mjs";
+import { ROW_SAMPLE, STATE_BOUND, admit, inScope, normaliseData, repeatGroup, rowId, rowSampler } from "./bound.mjs";
 import { KEYED_KINDS, scopeByRules } from "./graph.mjs";
 import { INTERACTION_UNFIRED, LISTENER_HOOK, focusOrder, interactionInvariant, locateFor, perform, readShortcuts, replayEdge, runInteractions } from "./interactions.mjs";
 import { DEFAULT_WIDTHS, readLabels } from "../qa/labels.mjs";
@@ -173,6 +173,7 @@ export async function explore(g, dir, opts = {}) {
     maxNodes = Infinity, risky = "record", allowPost = [], readPosts = "off", pace = 0, sample = SAMPLE, onlyPrefix = null,
     retries = RETRIES, backoffMs = BACKOFF_MS, loginPattern = null, wsGuard = "block", widths = DEFAULT_WIDTHS, log = (s) => console.error(s),
     keyboards = null, walkScope = null, entries = [], interactions = true, stateBound = STATE_BOUND, strictScope = false,
+    rowSample = ROW_SAMPLE,
   } = opts;
   // Documented shortcuts (a keyboards.json path or its parsed document), fired on every template.
   const shortcuts = keyboards ? readShortcuts(typeof keyboards === "string" ? JSON.parse(readFileSync(keyboards, "utf8")) : keyboards) : null;
@@ -578,6 +579,43 @@ export async function explore(g, dir, opts = {}) {
     return g.addNode({ url, state, signature, kind, label, contentKey });
   }
 
+  /**
+   * A state whose skeleton is its parent's (a drag that only moved a chip, a field filled in place)
+   * is recorded, not walked: what it shows now (screenshot, DOM, accessibility tree) and an empty
+   * inventory, then closed as `same-as-parent`. Expanding it again re-fired every control of the
+   * page: 1,414 elements and up to 368 s per moved chip.
+   */
+  async function closeSameAsParent(node, parent) {
+    const rel = join("nodes", node.id);
+    const art = join(dir, rel);
+    mkdirSync(art, { recursive: true });
+    await page.screenshot({ path: join(art, "screenshot.png"), timeout: 20000 }).catch(() => {});
+    writeFileSync(join(art, "dom.html"), await page.content().catch(() => ""));
+    writeFileSync(join(art, "aria.yml"), await page.locator("body").ariaSnapshot({ timeout: 20000 }).catch(() => ""));
+    // What Phase D compares beyond pixels, as a walked node has it (the state is reset after this).
+    const styles = await page.evaluate(styleManifest, { scopeCss: null }).catch(() => null);
+    if (styles) writeFileSync(join(art, "styles.json"), JSON.stringify(styles));
+    const focus = await focusOrder(page, null).catch(() => null);
+    if (focus) writeFileSync(join(art, "focus.json"), JSON.stringify(focus));
+    const vp = sweep.length ? page.viewportSize() : null;
+    if (vp?.width) {
+      const at = { captured: vp.width, height: vp.height, scope: null, widths: {} };
+      try {
+        for (const w of [...new Set([vp.width, ...sweep])].sort((a, b) => a - b)) {
+          await page.setViewportSize({ width: w, height: vp.height });
+          await page.waitForTimeout(250);
+          at.widths[w] = await page.evaluate(readLabels, { scopeCss: null }).catch(() => null);
+        }
+      } finally {
+        await page.setViewportSize(vp).catch(() => {});
+      }
+      writeFileSync(join(art, "widths.json"), JSON.stringify(at));
+    }
+    writeFileSync(join(art, "inventory.json"), JSON.stringify({ id: node.id, url: node.url, state: node.state, kind: node.kind, sameAsParent: parent.id, requests: [], candidates: [], interactions: [], invariant: "ok" }, null, 1));
+    g.annotate(node.id, { artifacts: rel, sameAsParent: parent.id, interactive: 0 });
+    g.setStatus(node.id, "closed", "same-as-parent");
+  }
+
   /** An out-of-scope destination: a gap node, with its reason. */
   function outNode(url, label) {
     const r = g.addNode({ url, signature: ["out-of-scope"], inScope: false, label });
@@ -695,7 +733,11 @@ export async function explore(g, dir, opts = {}) {
    * validation state, a drag's geometry), a native dialog or download, a write attempt, or
    * nothing (`inert`). `kind` is the edge kind when no write was sent; a write makes it `write`.
    */
-  async function observe(n, c, { kind = "click", element, before, urlBefore, rawBefore, mark, loc, expandedBefore, out, change, changeBefore, stateKey }) {
+  async function observe(n, c, { kind = "click", element, before, urlBefore, rawBefore, mark, loc, expandedBefore, out, change, changeBefore, stateKey, row = null }) {
+    // Fired on a data row: what it opens is named by the row template and the kind, never by the
+    // row's text (one state per shift chip was 238 nodes on one planner).
+    const rowState = row ? `${kind}:row:${rowId(row)}` : null;
+    const rowLabel = (s) => (row ? normaliseData(s) : s);
     const link = (k, node, request = null) => {
       // A result an older graph recorded for this same control under a look-alike it was merged
       // into (same kind and skeleton family, another content key) is stale once the split is read.
@@ -771,7 +813,7 @@ export async function explore(g, dir, opts = {}) {
       if (ov) {
         const { signature: sig, contentKey } = await readOf(ov.css);
         const okind = KIND_OF_ROLE[ov.role] ?? "overlay";
-        const { node } = stateNode({ url: page.url(), state: `${okind}:${ov.name || c.name}`, signature: sig, contentKey, kind: okind, label: `${okind}: ${ov.name || c.name}` });
+        const { node } = stateNode({ url: page.url(), state: rowState ?? `${okind}:${ov.name || c.name}`, signature: sig, contentKey, kind: okind, label: `${okind}: ${rowLabel(ov.name || c.name)}` });
         link(kindOf(), node, request);
         out.outcome = "overlay";
       } else {
@@ -785,14 +827,23 @@ export async function explore(g, dir, opts = {}) {
           // An interaction that reads its own state (a form's validation, a handle's geometry, the
           // text an upload shows): its result is named by the interaction (or by that state), never
           // merged by skeleton into another surface that happens to look alike.
-          const { node } = g.addNode({ url: page.url(), state: change.key ? change.key(changeAfter) : stateKey, signature: after, contentKey, kind: "state", label: change.label });
+          const state = rowState ?? (change.key ? change.key(changeAfter) : stateKey);
+          // A data row's result is one node per row template, kind and structure.
+          const prior = rowState ? g.nodesAt(page.url()).find((m) => m.state === state && m.kind === "state" && similarity(m.signature, after) >= SAME_STATE) : null;
+          const { node, isNew } = prior ? { node: prior, isNew: false } : g.addNode({ url: page.url(), state, signature: after, contentKey, kind: "state", label: change.label });
           if (node.id !== n.id) {
             link(kindOf(), node, request);
             out.outcome = "state";
+            // The page itself with a value changed (a chip moved, a field filled): the edge and the
+            // change are the record; walking the whole page again finds nothing new.
+            if (!reshaped) {
+              out.sameAsParent = true;
+              if (isNew) await closeSameAsParent(node, n);
+            }
           }
         } else if (reshaped || (expandedBefore !== expandedAfter && expandedAfter === "true")) {
-          const state = stateKey ?? `${c.role}:${c.name}`;
-          const { node } = stateNode({ url: page.url(), state, signature: after, contentKey, kind: "state", label: `${kind === "click" ? "" : `${kind} `}${c.role}: ${c.name}` });
+          const state = rowState ?? stateKey ?? `${c.role}:${c.name}`;
+          const { node } = stateNode({ url: page.url(), state, signature: after, contentKey, kind: "state", label: `${kind === "click" ? "" : `${kind} `}${c.role}: ${rowLabel(c.name)}` });
           if (node.id !== n.id) {
             link(kindOf(), node, request);
             out.outcome = "state";
@@ -869,7 +920,7 @@ export async function explore(g, dir, opts = {}) {
    * act, observe. `change` reads a value whose change is a state even when the skeleton is the
    * same (`{ read, label }`); `stateKey` names that state.
    */
-  async function fireAs(n, ensure, kind, c, { element, change = null, stateKey } = {}) {
+  async function fireAs(n, ensure, kind, c, { element, change = null, stateKey, row = null } = {}) {
     const out = { outcome: "inert", children: [] };
     const pre = await ensure();
     if (!pre.ok) return unfired(out, "state-not-restored");
@@ -888,7 +939,7 @@ export async function explore(g, dir, opts = {}) {
     }
     await settle(page, 2500);
     await checkPage(page, { byName: c.name ?? "" });
-    return observe(n, c, { kind, element, before: pre.pre.sig, urlBefore, rawBefore, mark, loc: kind === "click" ? loc : null, out, change, changeBefore, stateKey: stateKey ?? `${kind}:${c.role}:${c.name}` });
+    return observe(n, c, { kind, element, before: pre.pre.sig, urlBefore, rawBefore, mark, loc: kind === "click" ? loc : null, out, change, changeBefore, stateKey: stateKey ?? `${kind}:${c.role}:${c.name}`, row });
   }
 
   /**
@@ -1030,7 +1081,7 @@ export async function explore(g, dir, opts = {}) {
     // calendar of 594 controls took four minutes; the next sixteen added nothing new.
     const tmpl = g.data.templates[n.template];
     const seenKeys = new Set(tmpl.seenKeys ?? []);
-    const closedSiblings = tmpl.members.filter((id) => id !== n.id && ["closed", "built", "verified"].includes(g.data.nodes[id].status) && !g.data.nodes[id].info?.shallow).length;
+    const closedSiblings = tmpl.members.filter((id) => id !== n.id && ["closed", "built", "verified"].includes(g.data.nodes[id].status) && !g.data.nodes[id].info?.shallow && !g.data.nodes[id].info?.sameAsParent).length;
     const templateSampled = closedSiblings >= TEMPLATE_SAMPLE;
     const normKey = (c) => `${c.role}|${c.name.replace(/\d+([.,]\d+)*/g, "#")}|${repeatGroup(c.css)}`;
     let skippedByTemplate = 0;
@@ -1129,6 +1180,8 @@ export async function explore(g, dir, opts = {}) {
       const seenI = new Set(tmpl.seenInteractions ?? []);
       inter = await runInteractions({
         page, n, scopeCss, outcomes, inherited: parentKeys, seen: seenI, templateSampled, shortcuts, writesAllowed, risky, sample,
+        rows: rowSampler((g.data.meta.rowSamples ??= {}), { k: rowSample }),
+        leadOf: (res) => (res.children ?? []).map((id) => (res.sameAsParent ? "same-as-parent" : g.data.nodes[id]?.template)).join(",") || res.outcome,
         pending: (node, c, why, blocked, kind) => pending(node, c, why, blocked, kind),
         fire: async (kind, c, o) => {
           try {

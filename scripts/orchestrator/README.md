@@ -28,6 +28,7 @@ Site-agnostic: nothing here names a target. A build's data lives in its own
 | 10 | pages pair across URL schemes: `--pair-map` (exact view keys, `:name` params, regexes on key, URL or route) on compare, verify and report; unmapped views by key, then a flagged fuzzy pair; each view's pairing source in pairs.json and the report. Write round trips read back by a read POST (`multi_read`) the request classifier confirms | `compare.mjs` `verify.mjs` `run.mjs` `../qa/roundtrip_lib.mjs` `../qa/write_roundtrip.mjs` | done 2026-11-14 (`test/pair-map` `test/roundtrip-post`) |
 | 11 | unscoped is not out of scope: only a node a rule put in another scope closes shallow; unscoped nodes are walked fully after in-scope ones; a coverage guard warns (or `--strict-scope` exits 4) when the map matches under half the entries or walked nodes; `status` counts unscoped and shallow; `requeue --shallow` | `graph.mjs` `explore.mjs` `run.mjs` | done 2026-11-15 (`test/scope-guard`) |
 | 12 | `supervise`: explore chunks to frontier 0, status per chunk in `supervise.log`; on exit 3 prints `WAITING FOR SIGN-IN since <time>`, polls the human's window (`export-login.mjs`), proves the login with a headless page (`sessionState`; cookie count only a pre-check), saves it, `requeue --gaps`, resumes; exit 4 stops, another failure retries once, three chunks closing nothing stop as stalled (exit 5). No `--workers`: `store.mjs` has one writer per graph dir | `supervise.mjs` `run.mjs` `test/fixture/site.mjs` | done 2026-11-15 (`test/supervise`) |
+| 13 | data rows sampled, not exploded: right-click, double-click, drag and form on a data row (ROW_MIN look-alikes) fire K (`--row-sample`, default 2) per (page, row template, kind) across the walk, more only while each leads to a new template (`rowSampler`, counts in graph meta `rowSamples`); their states are named by row template, not row text; content keys normalise names, dates, weekdays, times and numbers (`normaliseData`, the same rules in `page-probe.mjs`); a state with its parent's skeleton is closed `same-as-parent` with its artifacts, not walked; `dedupe [--dry-run]` merges an older graph's exploded row states | `bound.mjs` `interactions.mjs` `explore.mjs` `page-probe.mjs` `graph.mjs` `run.mjs` | done 2026-11-15 (`test/rows`) |
 
 Not done: the walker does not draw on a map or canvas (Chrome does, SKILL.md section 4);
 `graph.html` is regenerated per chunk (`watch` is the streamed view); workers share no graph file, so
@@ -222,7 +223,20 @@ pre-state, each target ending as one row of `inventory.json` `interactions` (`ki
 | `upload` | each file input: accept list and size limit always; with `--allow-post`, `fixtureFile` accepted and rejected | what the page showed |
 
 A state that keeps the skeleton (a message in place, a moved handle) is its own node keyed by
-the interaction (`drag:separator:Resize pane`), never merged into the page. Every edge records
+the interaction (`drag:separator:Resize pane`), never merged into the page, and is closed
+`same-as-parent` when found (screenshot, DOM, AX tree, styles, widths, Tab order saved, nothing
+fired from it): walking the page again finds nothing new.
+
+**Data rows.** A target in a repeat group of `ROW_MIN` (3) or more (one chip per shift, one form
+per employee) fires as a sample of its row template: `ROW_SAMPLE` (2, `--row-sample`) per
+(page, row template, kind), counted in graph meta `rowSamples` so every node of the page shares
+them, more only while each sample leads to a new template, at most STATE_BOUND; the rest are
+`sampled-out`. Its result is keyed `<kind>:row:<id>` and labelled with `normaliseData` ("drag:
+<name>, <day> <date>, <time>-<time>"); a result with the same key and skeleton is one node.
+Content keys run the same normalisation in the page, so a glance titled with any person is one
+node, while different titles ("Approve timecard", "Sign-off") stay apart. `O dedupe [--dry-run]`
+repairs an older graph: nodes whose every in-edge comes from one row group of one kind merge per
+(page, kind, row group, normalised label, template) into a closed sample, edges rewritten. Every edge records
 what replays it, and `replayEdge` replays any kind for the walker's `reach` and verify's
 `reachClone`. `focus.json` is the Tab order (`focusOrder`). The invariant
 (`interactionInvariant`) holds a node open until every row is an edge, a fired result or a known
@@ -279,6 +293,7 @@ node run.mjs explore --max-nodes 40 [--risky probe] [--allow-post <regex>] [--cd
 node run.mjs status | tree | live | pending | frontier | route <id> | loops
 node run.mjs watch [--port 4777] [--dir d] [more dirs]           # streamed live tree, agents, blockers, replay
 node run.mjs requeue <id> | requeue --failed | requeue --gaps [--reason <text>] | requeue --risky | requeue --shallow | gap <id> --reason "..."
+node run.mjs dedupe [--dry-run]                     # merge an older walk's per-row states (stop the walk first)
 node run.mjs supervise --dir <copy> --only-prefix /area ...     # one parallel worker per area
 node run.mjs explore ... --ws-guard block|off --retries 3 --login-pattern <regex> --widths off|1024,1280
 node run.mjs explore ... --keyboards <repo>/keyboards.json      # documented shortcuts on every template

@@ -14,6 +14,7 @@
 //             [--strict-scope]                                     exit 4 when the map matches < 50% of entries or walked nodes
 //             [--entries-from <file>]                              entry pages: one URL per line, or a JSON list / route map
 //             [--no-interactions]                                  clicks only (no right-click, keys, drags, forms, uploads)
+//             [--row-sample K]                                     interactions per data-row template and kind (default 2)
 //     supervise [explore flags] [--chunk N] [--poll 30] [--min-cookies 1] [--max-wait <min>] [--state <file>]
 //               [--login-cdp <url>] [--domain <site>] [--check-url <url>]
 //                                     explore in chunks to frontier 0; on a lost login waits, re-exports the
@@ -21,6 +22,8 @@
 //     visit <url>                                                  add one more entry page
 //     requeue <nodeId> | requeue --failed | requeue --gaps [--reason <r>] | requeue --kind overlay,modal,menu,state | requeue --risky
 //             | requeue --shallow                                 every node closed shallowly back on the frontier for a full walk
+//     dedupe [--dry-run]                                           merge states an older walk minted per data row (one per
+//                                                                  person, date or shift) into one node per row template
 //     gap <nodeId> --reason "..."                                  corrections; --gaps puts back every gap with a retryable reason
 //                                                                  (and write-only nodes whose writes were page-load reads);
 //                                                                  --risky puts back every node with an element held by a name
@@ -54,7 +57,8 @@ import { parseArgs } from "node:util";
 import { DISCOVERY } from "../lib/pw.mjs";
 import { finish, loadState, nextUnit, packet, plan, progress, saveState, writePacket } from "./build.mjs";
 import { compare, pairNodes, readPairMap, toMarkdown } from "./compare.mjs";
-import { breadcrumbFromAria, isRetryableReason, tagScopes } from "./graph.mjs";
+import { dedupeRows } from "./bound.mjs";
+import { breadcrumbFromAria, edgeId, isRetryableReason, tagScopes } from "./graph.mjs";
 import { open, save } from "./store.mjs";
 import { countsLine, report, verify, verifyCounts, writePairs } from "./verify.mjs";
 import { writeLive, writeTree } from "./views.mjs";
@@ -124,6 +128,8 @@ const { values: o, positionals } = parseArgs({
     shallow: { type: "boolean", default: false },
     "entries-from": { type: "string" },
     "no-interactions": { type: "boolean", default: false },
+    "row-sample": { type: "string" },
+    "dry-run": { type: "boolean", default: false },
   },
 });
 const dir = o.dir;
@@ -197,6 +203,7 @@ function walkerOptions() {
   // keyboards.json of the target repo: every documented shortcut is fired on every template.
   if (o.keyboards !== undefined) out.keyboards = o.keyboards;
   if (o["no-interactions"]) out.interactions = false;
+  if (o["row-sample"] !== undefined) out.rowSample = +o["row-sample"];
   // A scope-driven walk: in-scope nodes first; out-of-scope ones closed shallowly unless --expand-out.
   if (o["scope-map"] !== undefined) {
     if (!o.scope) throw new Error("--scope-map needs --scope <id,...>");
@@ -357,6 +364,16 @@ switch (cmd) {
     }
     save(g, dir);
     say(`requeued ${ids.length} node(s)`);
+    break;
+  }
+  case "dedupe": {
+    const r = dedupeRows(g.data, { dryRun: o["dry-run"], edgeId });
+    for (const k of r.kept) say(`${o["dry-run"] ? "would keep" : "kept"} ${k.id} ${k.label} (${k.merged} merged into it)`);
+    if (!o["dry-run"] && r.collapsed) {
+      save(g, dir);
+      g.signal("graph.deduped", { groups: r.groups, collapsed: r.collapsed });
+    }
+    say(`${o["dry-run"] ? "would collapse" : "collapsed"} ${r.collapsed} data-row node(s) into ${r.groups} sampled node(s)`);
     break;
   }
   case "gap": {

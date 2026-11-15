@@ -24,6 +24,9 @@
 //   /ld/     pages whose content needs POSTs sent while they load (`/ld/x/action-config`,
 //            `/ld/banners/post`, `/ld/session-context`), one load write that must stay aborted,
 //            and a page that renders nothing without its load write (`/ld/broken`)
+//   /rows/   a schedule grid of 50 data rows (synthetic names, dates, times), one shift chip per
+//            row that is draggable (it only moves) and right-clickable (a glance titled with the
+//            row's person), plus two confirms with different titles (Approve / Sign-off)
 //   /out/    a link to /out/forecast, which redirects to /out/forecast#/logout and ends the
 //            session; every /out/ page after it redirects to /login
 
@@ -175,6 +178,37 @@ function shut(){$('confirm').hidden=true;$('team').hidden=true}
 function ask(t,b,y,n){$('ct').textContent=t;$('cb').textContent=b;$('c1').textContent=y;$('c2').textContent=n;$('confirm').hidden=false}
 function team(rows){$('tl').innerHTML=rows.map((r)=>'<li><button onclick="0">'+r+'</button></li>').join('');$('team').hidden=false}
 document.addEventListener('keydown',(e)=>{if(e.key==='Escape')shut()});
+</script>`);
+
+/** The /rows/ grid: `n` rows, each a person and one shift chip. All values synthetic. */
+const ROW_LAST = ["Doe", "Rivera", "Natarajan", "Lee", "Park", "Kim", "Okafor", "Silva", "Novak", "Haddad"];
+const ROW_FIRST = ["Alex", "Sam", "Priya", "Jordan", "Chris"];
+const ROW_DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+export const rowsHome = (n = 50) => plain("Schedule", `<h1>Schedule</h1>
+<style>.chip{display:inline-block;padding:2px 6px;background:#dfe;cursor:grab;position:relative}td{padding:2px 8px}</style>
+<button onclick="ask('Approve timecard','Approve this period?')">Approve</button>
+<button onclick="ask('Sign-off','Sign off this period?')">Sign-off period</button>
+<table><thead><tr><th>Employee</th><th>Shift</th></tr></thead><tbody>
+${Array.from({ length: n }, (_, i) => {
+    const who = `${ROW_LAST[i % 10]}, ${ROW_FIRST[Math.floor(i / 10) % 5]}`;
+    const day = ROW_DAYS[i % 7];
+    const shift = `${(i % 9) + 1}:${i % 2 ? "30" : "00"} ${i % 3 ? "PM" : "AM"}-${(i % 5) + 2}:00 AM`;
+    return `<tr><td>${who}</td><td><span class="chip" aria-label="${who}, ${day} 11/${String((i % 20) + 1).padStart(2, "0")}, ${shift}">${shift}</span></td></tr>`;
+  }).join("\n")}
+</tbody></table>
+<div id="glance" role="dialog" style="position:fixed;z-index:50;top:80px;left:420px;width:260px;background:#fff;border:1px solid #333" hidden>
+<h2 id="gt"></h2><p>Break 30 min</p><button onclick="shut()">Close</button></div>
+<div id="confirm" role="dialog" style="position:fixed;z-index:50;inset:20% 30%;background:#fff;border:1px solid #333" hidden>
+<h2 id="ct"></h2><p id="cb"></p><button onclick="shut()">Cancel</button></div>
+<script>
+const $=(id)=>document.getElementById(id);
+function shut(){$('glance').hidden=true;$('confirm').hidden=true}
+function ask(t,b){$('ct').textContent=t;$('cb').textContent=b;$('confirm').hidden=false}
+document.addEventListener('keydown',(e)=>{if(e.key==='Escape')shut()});
+for (const c of document.querySelectorAll('.chip')) {
+  c.addEventListener('contextmenu',(e)=>{e.preventDefault();const who=c.getAttribute('aria-label').split(', ').slice(0,2).join(', ');$('gt').textContent='Shift glance: '+who;$('glance').setAttribute('aria-label','Shift glance: '+who);$('glance').hidden=false});
+  c.addEventListener('pointerdown',(e)=>{const x0=e.clientX;const mv=(ev)=>{c.style.left=(ev.clientX-x0)+'px'};const up=()=>{document.removeEventListener('pointermove',mv);document.removeEventListener('pointerup',up)};document.addEventListener('pointermove',mv);document.addEventListener('pointerup',up)});
+}
 </script>`);
 
 /**
@@ -333,6 +367,7 @@ export function start() {
       if (req.method === "POST") return json({ ok: true });
     }
     if (url.pathname === "/conf/") return html(confHome);
+    if (url.pathname === "/rows/") return html(rowsHome(50));
     if (url.pathname.startsWith("/pick/")) {
       if (url.pathname === "/pick/") return html(pickHome);
       if (url.pathname === "/pick/api/timecards/multi_read") return json({ rows: ["Mon 8.0", "Tue 7.5", "Wed 8.0"] });

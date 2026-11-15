@@ -323,6 +323,21 @@ full audit:
   key (title plus its controls' names, digits as #, rows of data left out), so two confirms with
   one markup are two nodes of one template; on a graph walked before the key existed, run
   `O requeue --kind overlay,modal,menu,state` so the next walk splits what was merged.
+- **Data rows never mint a node each** (`bound.mjs` `rowSampler` `normaliseData`, `test/rows.test.mjs`).
+  A right-click, double-click, drag or form fired on a data row (ROW_MIN = 3 or more look-alike
+  targets of one css template: one chip per shift, one form per employee) is a sample of its row
+  template: `--row-sample` K (default 2) per (page, row template, kind) across the whole walk,
+  more only while each sample leads to a new template, the rest `sampled-out`. What it opens is
+  named by the row template and kind (`drag:row:<id>`), never by the row's text. Content keys and
+  row labels replace data tokens (names "Last, First", dates, weekdays, times, numbers) with
+  placeholders before hashing, so a glance titled with any person is one node; "Approve timecard"
+  and "Sign-off" stay two. A state whose skeleton equals its parent's (a drag that only moved a
+  chip, a field filled in place) is recorded (edge, change, screenshot, styles, widths, Tab
+  order) and closed `same-as-parent`, never walked again: before this, 238 drag states on one
+  planner were each walked in full (1,414 elements, up to 368 s apiece). On a graph walked
+  before the rule, stop its walk and run `O dedupe --dry-run`, then `O dedupe`: exploded
+  data-row states merge into one closed sample per (row template, kind, normalised title,
+  template), their edges are rewritten to it, and the group is seeded as sampled.
 - **The clone side** is walked on an isolated copy (own DB copy, own ports, never the dev DB:
   a copy-on-write clone deleted when the walk ends, per the Storage section of
   `video/SKILL.md`, which binds every seemly test run) with `--allow-post '.*'`, so every write flow runs end to end; `errors.jsonl` then lists each
@@ -377,7 +392,8 @@ What the walker guarantees per node (`explore.mjs`, each with a test in `test/wa
   on every node after the clicks, each from the verified pre-state:
   - `contextmenu`: a real right-click on every element with a contextmenu listener (an
     instrumented `addEventListener`, installed before page scripts) plus grid cells, rows and
-    chips; one per distinct row template, more while they open, STATE_BOUND past that.
+    chips; one per distinct row template, more while they open, STATE_BOUND past that; on data
+    rows, K per row template (above).
   - `dblclick`: elements with a dblclick listener, plus grid cells.
   - `key`: every shortcut in the target repo's `keyboards.json` (`--keyboards <path>`; a probe
     set when there is none and the page listens globally), once per template; Enter or Space on
