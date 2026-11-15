@@ -521,3 +521,77 @@ export class NeverOpen {
     return row;
   }
 }
+
+/**
+ * The identity of one allowed-posts.jsonl row: a learned rule by its rule, an applied one (a
+ * non-read request let through) by method, path template and phase. Null for an unreadable row.
+ */
+export function allowedKey(row) {
+  if (!row || typeof row !== "object") return null;
+  if (row.rule) return `rule ${row.rule}`;
+  if (!row.method || !row.url) return null;
+  let tmpl;
+  try {
+    tmpl = pathTemplate(row.url);
+  } catch {
+    tmpl = String(row.url);
+  }
+  return `${String(row.method).toUpperCase()} ${tmpl} ${row.phase ?? ""}`.trim();
+}
+
+const parseRows = (text) =>
+  String(text ?? "")
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => {
+      try {
+        return JSON.parse(l);
+      } catch {
+        return null;
+      }
+    });
+
+/**
+ * allowed-posts.jsonl, deduped on write: each learned or applied rule is logged once (`allowedKey`),
+ * not every request. A walk of one planner once logged 14,854 rows for a handful of rules.
+ * `rows` are the rows already on file (learned rules are reloaded from them).
+ */
+export class AllowedLog {
+  constructor(path = null) {
+    this.path = path;
+    this.rows = path && existsSync(path) ? parseRows(readFileSync(path, "utf8")).filter(Boolean) : [];
+    this.keys = new Set(this.rows.map(allowedKey).filter(Boolean));
+  }
+
+  /** Append `row` unless its rule is on file already; returns true when it was written. */
+  add(row) {
+    const k = allowedKey(row);
+    if (!k || this.keys.has(k)) return false;
+    this.keys.add(k);
+    this.rows.push(row);
+    if (this.path) appendFileSync(this.path, JSON.stringify(row) + "\n");
+    return true;
+  }
+}
+
+/**
+ * `O compact-allowed`: an allowed-posts.jsonl text rewritten to one row per rule (the first seen,
+ * with `seen`: how many rows it stood for). Unreadable lines are dropped. Returns
+ * `{ rows, before, after, dropped }`.
+ */
+export function compactAllowed(text) {
+  const all = parseRows(text);
+  const by = new Map();
+  let dropped = 0;
+  for (const r of all) {
+    const k = allowedKey(r);
+    if (!k) {
+      dropped++;
+      continue;
+    }
+    const had = by.get(k);
+    if (had) had.seen = (had.seen ?? 1) + (r.seen ?? 1);
+    else by.set(k, { ...r, seen: r.seen ?? 1 });
+  }
+  return { rows: [...by.values()], before: all.length, after: by.size, dropped };
+}

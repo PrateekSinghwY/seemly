@@ -586,6 +586,8 @@ const SPACE_ROLES = new Set(["checkbox", "switch", "radio"]);
  *   sample                     repeated siblings tried before sampling stops (SAMPLE)
  *   rows                       data-row sampler (bound.mjs `rowSampler`, kept in graph meta) and
  *   leadOf(res)                what one fired sample led to (a template), for its "new lead" rule
+ *   overBudget()               true once the node's time budget is spent: data-row samples left
+ *                              are `unfired: budget` (not counted as sampled); `fire` answers the same
  * A target that belongs to a data-row group (ROW_MIN or more members of one css template: one chip
  * per shift, one form per employee) fires as a sample of its row template: K per (page, template,
  * kind), more only while each leads somewhere new, the rest `sampled-out`. What it opens is named
@@ -600,12 +602,15 @@ export async function runInteractions(ctx) {
   // Data rows per kind: a group of ROW_MIN or more look-alike targets (forms by their own css).
   const rowsOf = { contextmenu: rowGroups(t.contextmenu), dblclick: rowGroups(t.dblclick), drag: rowGroups(t.drag), form: rowGroups(t.forms) };
   const rowKey = (kind, grp) => `${n.url}|${kind}|${grp}`;
-  /** The row group `css` samples for, or null when it is no data row; "out" when sampled out. */
+  /** The row group `css` samples for, or null when it is no data row; "out" when sampled out, "budget" when out of time. */
   const rowOf = (kind, css) => {
     const grp = repeatGroup(css ?? "");
     if (!rowsOf[kind]?.has(grp)) return null;
+    if (ctx.overBudget?.()) return "budget";
     return rows_.take(rowKey(kind, grp)) ? grp : "out";
   };
+  const notRow = (grp) => grp === "out" || grp === "budget";
+  const outWhy = (grp) => (grp === "budget" ? "budget" : "sampled-out");
   const rows = [];
   const keys = [];
   const norm = (s) => String(s ?? "").replace(/\d+([.,]\d+)*/g, "#");
@@ -649,8 +654,8 @@ export async function runInteractions(ctx) {
           continue;
         }
         const grp = rowOf(kind, c.css);
-        if (grp === "out") {
-          unfired(r, "sampled-out");
+        if (notRow(grp)) {
+          unfired(r, outWhy(grp));
           continue;
         }
         tried++;
@@ -675,8 +680,8 @@ export async function runInteractions(ctx) {
       continue;
     }
     const grp = rowOf("drag", c.css);
-    if (grp === "out") {
-      unfired(r, "sampled-out");
+    if (notRow(grp)) {
+      unfired(r, outWhy(grp));
       continue;
     }
     const res = await fire("drag", c, {
@@ -727,8 +732,8 @@ export async function runInteractions(ctx) {
     const fc = { role: f.role, name: f.name, css: f.css };
     // A form per data row (one per employee) is sampled as a whole: every case of it, or none.
     const grp = rowOf("form", f.css);
-    if (grp === "out") {
-      unfired(row(f.submit ? "submit" : "input", f.submit ? { role: f.submit.role, name: f.submit.name, css: f.submit.css } : fc, { case: "row" }), "sampled-out");
+    if (notRow(grp)) {
+      unfired(row(f.submit ? "submit" : "input", f.submit ? { role: f.submit.role, name: f.submit.name, css: f.submit.css } : fc, { case: "row" }), outWhy(grp));
       continue;
     }
     const fname = grp ? normaliseData(f.name) : f.name;

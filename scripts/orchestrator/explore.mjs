@@ -30,7 +30,7 @@ import { KEYED_KINDS, scopeByRules } from "./graph.mjs";
 import { INTERACTION_UNFIRED, LISTENER_HOOK, focusOrder, interactionInvariant, locateFor, perform, readShortcuts, replayEdge, runInteractions } from "./interactions.mjs";
 import { DEFAULT_WIDTHS, readLabels } from "../qa/labels.mjs";
 import { FLOATING_SEL, clearMarks, markFloating, newOverlays, openFloating, openOnLoad, probe, sessionState, styleManifest } from "./page-probe.mjs";
-import { NeverOpen, RequestClassifier, classify, classifyFrame, pairFrames, parseFrame, sessionEndingUrl } from "./safety.mjs";
+import { AllowedLog, NeverOpen, RequestClassifier, classify, classifyFrame, pairFrames, parseFrame, sessionEndingUrl } from "./safety.mjs";
 import { TRANSIENT_ERR, failureReason, markGap } from "./gaps.mjs";
 import { save } from "./store.mjs";
 
@@ -42,6 +42,12 @@ export const SAME_SURFACE = 0.995;
 export const SAMPLE = 5;
 /** Members of one template expanded in full before the rest fire only what is new to it. */
 export const TEMPLATE_SAMPLE = 2;
+
+/** Seconds one node's expansion may take before the rest of its elements are left `unfired: budget`. */
+export const NODE_BUDGET_S = 900;
+/** Inside one node's expansion, graph.json is saved at least every SAVE_EVERY fired elements or SAVE_EVERY_S seconds. */
+export const SAVE_EVERY = 20;
+export const SAVE_EVERY_S = 60;
 
 /** Tries of one navigation that met a transient error (5xx, "service unavailable", a timeout). */
 export const RETRIES = 3;
@@ -87,7 +93,7 @@ const FIRED_PREFIX = /^(native-dialog|download): /;
 /** Not fired, with the reason it was not. */
 export const UNFIRED_REASONS = new Set([
   "disabled", "field", "select", "skipped:never", "skipped:risky", "inherited", "template-seen", "sampled-out",
-  "state-not-restored", "not-found", "unclickable", "error", "shallow", ...INTERACTION_UNFIRED,
+  "state-not-restored", "not-found", "unclickable", "error", "shallow", "budget", ...INTERACTION_UNFIRED,
 ]);
 const UNFIRED_PREFIX = /^shell: /;
 const knownUnfired = (r) => UNFIRED_REASONS.has(r) || UNFIRED_PREFIX.test(r ?? "");
@@ -167,13 +173,18 @@ const KIND_OF_ROLE = { dialog: "modal", alertdialog: "modal", menu: "menu", list
  *                browser; "off": frames are only recorded (`--ws-guard block|off`)
  *   widths       widths each node's structural labels are read at for Phase D, besides the
  *                capture width (`--widths 1024,1280,...` or `--widths off`; default DEFAULT_WIDTHS)
+ *   nodeBudgetS  seconds one node's expansion may take (`--node-budget-s N`, default NODE_BUDGET_S,
+ *                0 = none); what is left is `unfired: budget`, the node closes with `info.partial`,
+ *                and `requeue --partial` walks it again
+ *   saveEvery, saveEveryS  graph.json is saved inside a node's expansion every so many fired
+ *                elements or seconds (`--save-every N`, `--save-every-s N`)
  */
 export async function explore(g, dir, opts = {}) {
   const {
     maxNodes = Infinity, risky = "record", allowPost = [], readPosts = "off", pace = 0, sample = SAMPLE, onlyPrefix = null,
     retries = RETRIES, backoffMs = BACKOFF_MS, loginPattern = null, wsGuard = "block", widths = DEFAULT_WIDTHS, log = (s) => console.error(s),
     keyboards = null, walkScope = null, entries = [], interactions = true, stateBound = STATE_BOUND, strictScope = false,
-    rowSample = ROW_SAMPLE,
+    rowSample = ROW_SAMPLE, nodeBudgetS = NODE_BUDGET_S, saveEvery = SAVE_EVERY, saveEveryS = SAVE_EVERY_S,
   } = opts;
   // Documented shortcuts (a keyboards.json path or its parsed document), fired on every template.
   const shortcuts = keyboards ? readShortcuts(typeof keyboards === "string" ? JSON.parse(readFileSync(keyboards, "utf8")) : keyboards) : null;
@@ -222,10 +233,12 @@ export async function explore(g, dir, opts = {}) {
   const pendingKeys = new Set(existsSync(pendingPath) ? readFileSync(pendingPath, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l).key) : []);
 
   // Read POSTs: one classifier for "may this request leave the browser" and "is this edge a
-  // write". Learned rules are logged to allowed-posts.jsonl and reloaded on the next run.
-  const allowedPath = join(dir, "allowed-posts.jsonl");
-  const reqs = new RequestClassifier({ allowPost, readPosts, origin: g.data.meta.origin ?? null, onLearn: (row) => appendFileSync(allowedPath, JSON.stringify({ ...row, node: current.node, element: current.element }) + "\n") });
-  if (existsSync(allowedPath)) reqs.load(readFileSync(allowedPath, "utf8").split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }));
+  // write". Learned rules are logged to allowed-posts.jsonl and reloaded on the next run; each
+  // learned or applied rule is logged once (AllowedLog: method, path template, phase), never
+  // every request.
+  const allowedLog = new AllowedLog(join(dir, "allowed-posts.jsonl"));
+  const reqs = new RequestClassifier({ allowPost, readPosts, origin: g.data.meta.origin ?? null, onLearn: (row) => allowedLog.add({ ...row, node: current.node, element: current.element }) });
+  reqs.load(allowedLog.rows);
 
   const { context, close } = await openReference(opts);
   // Which elements listen for a right-click, a double-click, a drag or keys (interactions.mjs).
@@ -282,7 +295,7 @@ export async function explore(g, dir, opts = {}) {
     // A non-read method let through as a read: logged, so a person can confirm each one is.
     if (!["GET", "HEAD", "OPTIONS"].includes(req.method().toUpperCase())) {
       net.reads++;
-      appendFileSync(allowedPath, JSON.stringify({ method: req.method(), url: req.url(), why: v.why, phase: ph, node: current.node, element: current.element }) + "\n");
+      allowedLog.add({ method: req.method(), url: req.url(), why: v.why, phase: ph, node: current.node, element: current.element });
     }
     return route.fallback();
   });
@@ -995,6 +1008,20 @@ export async function explore(g, dir, opts = {}) {
   }
 
   async function expandNode(n) {
+    // The node's budget and its mid-expansion saves: a node of 1,400 elements once ran 3.5 hours
+    // with graph.json unsaved the whole time.
+    const t0 = Date.now();
+    const overBudget = () => nodeBudgetS > 0 && (Date.now() - t0) / 1000 > nodeBudgetS;
+    let fired = 0;
+    let lastSave = Date.now();
+    const tick = () => {
+      fired++;
+      if (fired % Math.max(1, saveEvery) === 0 || Date.now() - lastSave >= saveEveryS * 1000) {
+        save(g, dir);
+        lastSave = Date.now();
+        g.signal("walker.saved", { node: n.id, fired });
+      }
+    };
     net.bodies = [];
     net.ws = [];
     current = { node: n.id, element: "(load)" };
@@ -1082,6 +1109,8 @@ export async function explore(g, dir, opts = {}) {
     // trigger group, hint), more only while each opens something new; the rest `sampled-out`.
     const clicky = clickGroups(r.candidates);
     const clicks = rowSampler((g.data.meta.rowSamples ??= {}), { k: rowSample });
+    // Data chips (names alike once normalised): K per (page template, group, pattern), no more.
+    const dataClicks = rowSampler(g.data.meta.rowSamples, { k: rowSample, limit: rowSample });
     const outcomes = [];
     // The node's pre-state: every element fires from exactly this, verified each time.
     const base = await preState();
@@ -1092,7 +1121,7 @@ export async function explore(g, dir, opts = {}) {
     // calendar of 594 controls took four minutes; the next sixteen added nothing new.
     const tmpl = g.data.templates[n.template];
     const seenKeys = new Set(tmpl.seenKeys ?? []);
-    const closedSiblings = tmpl.members.filter((id) => id !== n.id && ["closed", "built", "verified"].includes(g.data.nodes[id].status) && !g.data.nodes[id].info?.shallow && !g.data.nodes[id].info?.sameAsParent).length;
+    const closedSiblings = tmpl.members.filter((id) => id !== n.id && ["closed", "built", "verified"].includes(g.data.nodes[id].status) && !g.data.nodes[id].info?.shallow && !g.data.nodes[id].info?.partial && !g.data.nodes[id].info?.sameAsParent).length;
     const templateSampled = closedSiblings >= TEMPLATE_SAMPLE;
     const normKey = (c) => `${c.role}|${c.name.replace(/\d+([.,]\d+)*/g, "#")}|${repeatGroup(c.css)}`;
     let skippedByTemplate = 0;
@@ -1104,6 +1133,7 @@ export async function explore(g, dir, opts = {}) {
         outcomes.push(unfired(row, "template-seen"));
         continue;
       }
+      const newKey = !seenKeys.has(normKey(c));
       seenKeys.add(normKey(c));
       if (parentKeys.has(keyOf(c))) {
         outcomes.push(unfired(row, "inherited"));
@@ -1128,9 +1158,17 @@ export async function explore(g, dir, opts = {}) {
         continue;
       }
 
+      // Out of time: what is left waits for `requeue --partial`, unsampled and unseen.
+      if (overBudget()) {
+        if (newKey) seenKeys.delete(normKey(c));
+        outcomes.push(unfired(row, "budget"));
+        continue;
+      }
+
       const cg = c.href ? null : clicky.get(c.css) ?? null;
-      const ckey = cg ? `${n.template}|click|${cg.group}|${cg.hint}` : null;
-      if (cg && !clicks.take(ckey)) {
+      const ckey = cg ? `${n.template}|click|${cg.group}|${cg.hint}${cg.pattern ? `|${cg.pattern}` : ""}` : null;
+      const sampler = cg?.pattern ? dataClicks : clicks;
+      if (cg && !sampler.take(ckey)) {
         outcomes.push(unfired(row, "sampled-out", { group: cg.id }));
         continue;
       }
@@ -1157,7 +1195,7 @@ export async function explore(g, dir, opts = {}) {
           // Never fire from a state the last element left behind: restore, verify, then fire.
           const pre = await ensure();
           if (!pre.ok) {
-            if (ckey) clicks.release(ckey);
+            if (ckey) sampler.release(ckey);
             outcomes.push(unfired(row, "state-not-restored"));
             continue;
           }
@@ -1184,8 +1222,11 @@ export async function explore(g, dir, opts = {}) {
       if (ckey) {
         // Sampled only while every sample opens an overlay or menu: a group whose members change
         // the page in place, navigate or do nothing fires in full, as before.
+        // A data group is sampled whatever its samples do: a chip that only selects itself is
+        // still one of 1,400 alike.
         const kids = (res.children ?? []).map((id) => g.data.nodes[id]);
-        if (isUnfired(res)) clicks.release(ckey);
+        if (isUnfired(res)) sampler.release(ckey);
+        else if (cg?.pattern) sampler.lead(ckey, kids.map((k) => `${k?.template}:${k?.contentKey ?? ""}`).join(",") || res.outcome);
         else if (kids.length && kids.every((k) => k && ["overlay", "menu", "modal"].includes(k.kind))) clicks.lead(ckey, kids.map((k) => `${k.template}:${k.contentKey ?? ""}`).join(","));
         else clicks.exempt(ckey);
         if (cg) res.group = cg.id;
@@ -1197,6 +1238,7 @@ export async function explore(g, dir, opts = {}) {
         if (!s.pages.includes(n.template)) s.pages.push(n.template);
       }
       outcomes.push({ ...row, ...res });
+      if (!isUnfired(res)) tick();
     }
 
     const sampled = [...groups].filter(([grp, G]) => G.tried < groupSize.get(grp)).map(([grp, G]) => ({ group: grp, of: groupSize.get(grp), tried: G.tried }));
@@ -1208,13 +1250,16 @@ export async function explore(g, dir, opts = {}) {
     if (interactions) {
       const seenI = new Set(tmpl.seenInteractions ?? []);
       inter = await runInteractions({
-        page, n, scopeCss, outcomes, inherited: parentKeys, seen: seenI, templateSampled, shortcuts, writesAllowed, risky, sample,
+        page, n, scopeCss, outcomes, inherited: parentKeys, seen: seenI, templateSampled, shortcuts, writesAllowed, risky, sample, overBudget,
         rows: rowSampler((g.data.meta.rowSamples ??= {}), { k: rowSample }),
         leadOf: (res) => (res.children ?? []).map((id) => (res.sameAsParent ? "same-as-parent" : g.data.nodes[id]?.template)).join(",") || res.outcome,
         pending: (node, c, why, blocked, kind) => pending(node, c, why, blocked, kind),
         fire: async (kind, c, o) => {
+          if (overBudget()) return unfired({ children: [] }, "budget");
           try {
-            return await fireAs(n, ensure, kind, c, o);
+            const res = await fireAs(n, ensure, kind, c, o);
+            if (!isUnfired(res)) tick();
+            return res;
           } catch (e) {
             if (e instanceof SessionEnding) return ended(n, c, e);
             if (e instanceof SessionLost || BROWSER_GONE.test(e.message) || NETWORK_GONE.test(e.message)) throw e;
@@ -1222,6 +1267,7 @@ export async function explore(g, dir, opts = {}) {
           }
         },
         reset: async () => {
+          if (overBudget()) return;
           await reach(n, { fresh: true }).catch(() => {});
         },
       });
@@ -1232,7 +1278,11 @@ export async function explore(g, dir, opts = {}) {
     const unfiredCount = outcomes.filter(isUnfired).length;
     writeFileSync(join(art, "inventory.json"), JSON.stringify({ id: n.id, url: n.url, state: n.state, kind: n.kind, title: r.title, requests, wsReads, candidates: outcomes, interactions: inter.rows, forms: inter.forms, files: inter.files, globalKeys: inter.globalKeys, invariant: violations.length ? violations : "ok" }, null, 1));
     if (violations.length) throw new InvariantError(`invariant: ${violations.length} element(s) unaccounted: ${violations.slice(0, 3).join("; ")}`);
-    g.annotate(n.id, { unfired: unfiredCount || undefined, notRestored: outcomes.filter((o) => o.unfired === "state-not-restored").length || undefined });
+    // Out of time: closed, marked partial with a retryable reason; `requeue --partial` walks it again.
+    const left = [...outcomes, ...inter.rows].filter((o) => o.unfired === "budget").length;
+    const partial = left ? { reason: "budget", retryable: true, unfired: left, budgetS: nodeBudgetS, at: new Date().toISOString() } : undefined;
+    g.annotate(n.id, { unfired: unfiredCount || undefined, notRestored: outcomes.filter((o) => o.unfired === "state-not-restored").length || undefined, partial });
+    if (partial) g.signal("walker.partial", { node: n.id, reason: `budget ${nodeBudgetS}s: ${left} element(s) left unfired` });
     return outcomes;
   }
 
@@ -1299,6 +1349,7 @@ export async function explore(g, dir, opts = {}) {
         const outs = await expandNode(n);
         g.setStatus(n.id, "closed");
         const opened = outs.filter((o) => o.children?.length).length;
+        if (n.info?.partial) log(`partial ${n.id}: node budget ${nodeBudgetS}s spent, ${n.info.partial.unfired} element(s) left for requeue --partial`);
         log(`closed ${n.id} ${n.kind.padEnd(6)} ${n.label.slice(0, 60)}  elements ${outs.length}, opened ${opened}, ${((Date.now() - t) / 1000).toFixed(1)}s  frontier ${g.frontier.size}`);
       } catch (e) {
         if (e instanceof SessionEnding) {

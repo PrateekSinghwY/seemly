@@ -14,7 +14,11 @@
 //             [--strict-scope]                                     exit 4 when the map matches < 50% of entries or walked nodes
 //             [--entries-from <file>]                              entry pages: one URL per line, or a JSON list / route map
 //             [--no-interactions]                                  clicks only (no right-click, keys, drags, forms, uploads)
-//             [--row-sample K]                                     interactions per data-row template and kind, and clicks per repeated trigger group (default 2)
+//             [--row-sample K]                                     interactions per data-row template and kind, and clicks per repeated trigger group
+//                                                                  or data-chip pattern (default 2)
+//             [--node-budget-s N]                                  seconds one node may take (default 900, 0 = none); the rest is
+//                                                                  `unfired: budget` and the node closes partial (requeue --partial)
+//             [--save-every N] [--save-every-s N]                  save graph.json inside a node every N fired elements / N s (20 / 60)
 //     supervise [explore flags] [--chunk N] [--poll 30] [--min-cookies 1] [--max-wait <min>] [--state <file>]
 //               [--login-cdp <url>] [--domain <site>] [--check-url <url>]
 //                                     explore in chunks to frontier 0; on a lost login waits, re-exports the
@@ -22,6 +26,8 @@
 //     visit <url>                                                  add one more entry page
 //     requeue <nodeId> | requeue --failed | requeue --gaps [--reason <r>] | requeue --kind overlay,modal,menu,state | requeue --risky
 //             | requeue --shallow                                 every node closed shallowly back on the frontier for a full walk
+//             | requeue --partial                                 every node closed partial (node budget spent) back on the frontier
+//     compact-allowed [--dry-run]                                  rewrite allowed-posts.jsonl to one row per rule (method, path template, phase)
 //     dedupe [--dry-run]                                           merge states an older walk minted per data row (one per
 //                                                                  person, date or shift) into one node per row template, and
 //                                                                  overlays minted per repeated click trigger (a menu per column
@@ -51,7 +57,7 @@
 //                                     walk diff; writes <clone>/pairs.json (page pairing: map / key / fuzzy / none)
 //   (any) --dir <discovery dir>   --cdp <http://127.0.0.1:9222>   --headed   --agent <name> (who the live view shows)
 
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -128,6 +134,10 @@ const { values: o, positionals } = parseArgs({
     "expand-out": { type: "boolean", default: false },
     "strict-scope": { type: "boolean", default: false },
     shallow: { type: "boolean", default: false },
+    partial: { type: "boolean", default: false },
+    "node-budget-s": { type: "string" },
+    "save-every": { type: "string" },
+    "save-every-s": { type: "string" },
     "entries-from": { type: "string" },
     "no-interactions": { type: "boolean", default: false },
     "row-sample": { type: "string" },
@@ -165,6 +175,9 @@ function status(g, scope) {
   // A shallow-closed node was inventoried, never fired: never let it pass for a walked one.
   const ws = g.data.meta.walkScope;
   if ((ws || wc.shallow) && !scope) say(`WALK    ${ws ? `scope ${ws.ids.join(",")} · in ${wc.in} · unscoped ${wc.unscoped} · out ${wc.out} · ` : ""}shallow ${wc.shallow}`);
+  // A partial node ran out of its node budget: closed, not walked in full.
+  const pc = g.partialCounts();
+  if (pc.nodes && !scope) say(`PARTIAL ${pc.nodes} node(s) closed partial, ${pc.left} element(s) left unfired (budget); requeue --partial walks them again`);
   if (pr) say(`BUILD   ${pr.units} units: ${UNITS(pr)}`);
   // Phase D counts come from pairs.json, the clone graph and the check records on disk.
   const vdir = o.clone?.[0] ?? dir;
@@ -206,6 +219,9 @@ function walkerOptions() {
   if (o.keyboards !== undefined) out.keyboards = o.keyboards;
   if (o["no-interactions"]) out.interactions = false;
   if (o["row-sample"] !== undefined) out.rowSample = +o["row-sample"];
+  if (o["node-budget-s"] !== undefined) out.nodeBudgetS = +o["node-budget-s"];
+  if (o["save-every"] !== undefined) out.saveEvery = +o["save-every"];
+  if (o["save-every-s"] !== undefined) out.saveEveryS = +o["save-every-s"];
   // A scope-driven walk: in-scope nodes first; out-of-scope ones closed shallowly unless --expand-out.
   if (o["scope-map"] !== undefined) {
     if (!o.scope) throw new Error("--scope-map needs --scope <id,...>");
@@ -231,6 +247,22 @@ if (cmd === "watch") {
   const { serve } = await import("./watch.mjs");
   await serve({ dirs: [...new Set([dir, ...positionals])], port: o.port ? +o.port : 4777, say });
   await new Promise(() => {});
+}
+// allowed-posts.jsonl down to one row per rule: needs no graph and no walker.
+if (cmd === "compact-allowed") {
+  const { compactAllowed } = await import("./safety.mjs");
+  const p = join(dir, "allowed-posts.jsonl");
+  if (!existsSync(p)) {
+    say(`no ${p}`);
+    process.exit(0);
+  }
+  const r = compactAllowed(readFileSync(p, "utf8"));
+  if (!o["dry-run"]) {
+    writeFileSync(`${p}.tmp`, r.rows.map((x) => JSON.stringify(x)).join("\n") + (r.rows.length ? "\n" : ""));
+    renameSync(`${p}.tmp`, p);
+  }
+  say(`${o["dry-run"] ? "would compact" : "compacted"} ${p}: ${r.before} row(s) -> ${r.after} rule(s)${r.dropped ? `, ${r.dropped} unreadable dropped` : ""}`);
+  process.exit(0);
 }
 // Who the live view shows for this process: --agent, else the walker's area, else the command.
 process.env.SEEMLY_AGENT ||= o.agent ?? (cmd === "explore" ? `walker${o["only-prefix"]?.length ? ` ${o["only-prefix"].join(",")}` : ""}` : `${cmd}-${process.pid}`);
@@ -344,6 +376,14 @@ switch (cmd) {
       save(g, dir);
       for (const n of done) say(`requeued ${n.id} ${n.label}`);
       say(`requeued ${done.length} shallow node(s) for a full walk`);
+      break;
+    }
+    // --partial: every node whose node budget ran out, back on the frontier for a full walk.
+    if (o.partial) {
+      const done = g.requeuePartial();
+      save(g, dir);
+      for (const n of done) say(`requeued ${n.id} ${n.label}`);
+      say(`requeued ${done.length} partial node(s) for a full walk`);
       break;
     }
     // --kind: nodes of those kinds with no content key (an older graph merged look-alike overlays),

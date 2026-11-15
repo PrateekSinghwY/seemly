@@ -430,6 +430,31 @@ export class Graph {
     return out;
   }
 
+  /** Nodes closed partial (their node budget ran out) and the elements they left unfired. */
+  partialCounts() {
+    const out = { nodes: 0, left: 0 };
+    for (const n of Object.values(this.data.nodes)) {
+      if (!n.info?.partial || n.status !== "closed") continue;
+      out.nodes++;
+      out.left += n.info.partial.unfired ?? 0;
+    }
+    return out;
+  }
+
+  /** Every node closed partial (its node budget ran out) back on the frontier for a full walk. */
+  requeuePartial() {
+    const out = [];
+    for (const n of Object.values(this.data.nodes)) {
+      if (!n.info?.partial || n.status !== "closed") continue;
+      n.info.lastPartial = n.info.partial;
+      delete n.info.partial;
+      n.attempts = 0;
+      this.setStatus(n.id, "frontier", null);
+      out.push(n);
+    }
+    return out;
+  }
+
   /** Nodes on one canonical URL, to match a state against ones already seen there. */
   nodesAt(url) {
     const c = this.canon(url);

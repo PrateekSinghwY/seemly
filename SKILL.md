@@ -349,7 +349,14 @@ full audit:
   number column's Sum/Avg menu is still reached; a group whose sample changes the page in place,
   navigates or does nothing fires in full, as before. The overlay is keyed `click:row:<id>`, and
   its label and content key read the column's own text as `<item>`, so two columns' menus key
-  alike while menus with other items stay apart. Labels and state keys drop generated class
+  alike while menus with other items stay apart. **Data chips** are triggers whose names differ
+  but read alike once normalised (`normaliseData`): every shift chip of a planner is `<name>, <day>
+  <date>, <time>-<time>`, every empty day cell `<name>, <day> <date>`. They group by (role, css
+  template, pattern) and fire strictly `--row-sample` K per (page template, group, pattern),
+  whatever each opens (selecting itself, nothing, an editor), the rest `sampled-out`. A name needs
+  a person, date, time, weekday or id placeholder to count as data, so a toolbar of different
+  commands (Approve, Sign-off, Team A) still fires member by member (`test/plan.test.mjs`).
+  Labels and state keys drop generated class
   names and ids (a token with 6+ digits or an 8+ hex run: `.grid1794721638366`), and content
   keys read hex ids as `<id>`. Before this, one overlay per column and per dataview page was
   walked at about 28 s each (260 in one queue). `O dedupe` also collapses those: overlays whose
@@ -385,7 +392,9 @@ What the walker guarantees per node (`explore.mjs`, each with a test in `test/wa
 - **Reads are told from writes** by one `RequestClassifier` (`safety.mjs`): read methods pass;
   a POST passes when `--allow-post` matches, a GraphQL query, or (with `--read-posts auto`) its
   path or body names a read, and the rule it passed by is learned into `allowed-posts.jsonl`
-  and reloaded next run; a write word in the body always wins. POSTs a page sends while it loads
+  and reloaded next run (each learned or applied rule once, by method, path template and phase:
+  never a row per request; `O compact-allowed [--dry-run]` rewrites an older per-request file to
+  one row per rule, with `seen` counts); a write word in the body always wins. POSTs a page sends while it loads
   are reads unless clearly named writes (`(load)` rules). Analytics beacons and analytics hosts
   are dropped and not counted as writes. An edge is a `write` only when a request its own act
   sent was a write, never a write the page it opened sent while loading.
@@ -448,6 +457,17 @@ What the walker guarantees per node (`explore.mjs`, each with a test in `test/wa
   closed shallow, not walked)`: a shallow count is unwalked surface, never coverage.
   `O requeue --shallow` puts every shallow-closed node back on the frontier for a full walk (fix
   the map or pass `--expand-out` first, or an out-of-scope node closes shallow again).
+- **Every node has a time budget, and a long node is saved as it goes.** `--node-budget-s`
+  (default 900, `0` = none): once a node's expansion has run that long, every element it has not
+  fired yet (clicks and every other interaction kind) is `unfired: budget`, and the node closes
+  with `info.partial` (`reason: budget`, `retryable: true`, the count left). Its status stays
+  `closed`, so older readers of graph.json keep working; `status` prints `PARTIAL N node(s) closed
+  partial, M element(s) left unfired`, a partial node does not count as a sampled sibling of its
+  template, and `O requeue --partial` puts every partial node back on the frontier for a full walk
+  (run it with a larger budget or `--node-budget-s 0`). Inside a node graph.json is saved
+  atomically every `--save-every` fired elements (20) or `--save-every-s` seconds (60), with a
+  `walker.saved` event, so a crash or stop mid-node loses little. graph-clone-r5 once spent 3.5
+  hours on one planner of ~1,400 elements with graph.json unsaved the whole time.
 
 **Scope, verify, report.** `O scope --map scope.json` tags every node with a component id from
 ordered rules (URL, title, heading, breadcrumb, label, kind, template; first match wins, then

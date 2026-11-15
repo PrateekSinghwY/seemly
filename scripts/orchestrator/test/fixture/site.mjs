@@ -31,6 +31,9 @@
 //            button opening one shared menu titled by the column and a generated class
 //            (`.grid<digits>`): text columns offer sort, hide, group by and count; the last 10,
 //            number columns (class `num`), add Sum and Avg
+//   /plan/   a schedule planner: 60 shift chips with different names ("<name>, <day> <date>,
+//            <time>-<time>"), half opening one shared shift editor and half doing nothing, 24 empty day cells ("<name>, <day>
+//            <date>") that do nothing, and a toolbar of four different commands in one css template
 //   /out/    a link to /out/forecast, which redirects to /out/forecast#/logout and ends the
 //            session; every /out/ page after it redirects to /login
 
@@ -213,6 +216,33 @@ for (const c of document.querySelectorAll('.chip')) {
   c.addEventListener('contextmenu',(e)=>{e.preventDefault();const who=c.getAttribute('aria-label').split(', ').slice(0,2).join(', ');$('gt').textContent='Shift glance: '+who;$('glance').setAttribute('aria-label','Shift glance: '+who);$('glance').hidden=false});
   c.addEventListener('pointerdown',(e)=>{const x0=e.clientX;const mv=(ev)=>{c.style.left=(ev.clientX-x0)+'px'};const up=()=>{document.removeEventListener('pointermove',mv);document.removeEventListener('pointerup',up)};document.addEventListener('pointermove',mv);document.addEventListener('pointerup',up)});
 }
+</script>`);
+
+/** The /plan/ planner: 12 people x 5 days of shift chips, 2 empty days each, a command toolbar. All synthetic. */
+const PLAN_LAST = ["Doe", "Rivera", "Natarajan", "Lee", "Park", "Kim", "Okafor", "Silva", "Novak", "Haddad", "Ortiz", "Brandt"];
+const PLAN_DAYS = [["Sun", 15], ["Mon", 16], ["Tue", 17], ["Wed", 18], ["Thu", 19], ["Fri", 20], ["Sat", 21]];
+export const planHome = () => plain("Schedule Planner", `<h1>Schedule Planner</h1>
+<style>td{padding:2px 6px}.chip{background:#dfe}</style>
+<div class="bar"><button onclick="ask('Approve schedule')">Approve</button><button onclick="ask('Sign-off')">Sign-off</button><button onclick="0">Refresh</button><button onclick="0">Team A</button></div>
+<table><tbody>${PLAN_LAST.map((last, i) => {
+    const who = `${last}, ${["Alex", "Sam", "Priya", "Jordan"][i % 4]}`;
+    return `<tr><th>${who}</th>${PLAN_DAYS.map(([d, n], j) => {
+      const date = `11/${n}`;
+      if (j === 0 || j === 6) return `<td><button aria-label="${who}, ${d} ${date}" onclick="0">+</button></td>`;
+      const shift = `${(i + j) % 9 + 1}:${j % 2 ? "30" : "00"} ${j % 3 ? "PM" : "AM"}-${(i % 5) + 2}:00 AM`;
+      return `<td><div><button class="chip" aria-label="${who}, ${d} ${date}, ${shift}" onclick="${(i + j) % 2 ? "edit(this)" : "0"}">${shift}</button></div></td>`;
+    }).join("")}</tr>`;
+  }).join("\n")}</tbody></table>
+<div id="ed" role="dialog" style="position:fixed;z-index:50;inset:20% 30%;background:#fff;border:1px solid #333" hidden>
+<h2 id="et"></h2><p>Start, end, break</p><button onclick="shut()">Close</button></div>
+<div id="confirm" role="dialog" style="position:fixed;z-index:50;inset:20% 30%;background:#fff;border:1px solid #333" hidden>
+<h2 id="ct"></h2><button onclick="shut()">Cancel</button></div>
+<script>
+const $=(id)=>document.getElementById(id);
+function shut(){$('ed').hidden=true;$('confirm').hidden=true}
+function edit(b){$('et').textContent='Edit shift: '+b.getAttribute('aria-label').split(', ').slice(0,2).join(', ');$('ed').hidden=false}
+function ask(t){$('ct').textContent=t;$('confirm').hidden=false}
+document.addEventListener('keydown',(e)=>{if(e.key==='Escape')shut()});
 </script>`);
 
 /** The /cols/ grid: 20 text columns, then 10 number columns. All names synthetic. */
@@ -399,6 +429,7 @@ export function start() {
     if (url.pathname === "/conf/") return html(confHome);
     if (url.pathname === "/rows/") return html(rowsHome(50));
     if (url.pathname === "/cols/") return html(colsHome());
+    if (url.pathname === "/plan/") return html(planHome());
     if (url.pathname.startsWith("/pick/")) {
       if (url.pathname === "/pick/") return html(pickHome);
       if (url.pathname === "/pick/api/timecards/multi_read") return json({ rows: ["Mon 8.0", "Tue 7.5", "Wed 8.0"] });

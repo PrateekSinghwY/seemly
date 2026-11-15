@@ -164,14 +164,26 @@ const UNSAMPLED_ROLES = new Set(["tab", "menuitem", "menuitemradio", "menuitemch
 // carries one (a page of number columns only) or one member does (a single number column).
 const TYPE_TOKEN = /(?:^|[-_:=])(?:num|numeric|number|integer|decimal|currency|money|amount|percent|date|datetime|bool|boolean|right)(?:$|[-_])/i;
 
+/** A normalised name that carries row data (a person, a date, a time, a weekday, an id), not only digits. */
+const DATA_PLACEHOLDER = /<(?:name|date|time|day|id)>/;
+
 /**
- * Repeated click triggers on one node (a ▾ per column header, a kebab per row): ROW_MIN or more
- * non-link candidates of one role and css template whose names follow one pattern (shared words,
- * or one name for all). Each member gets its group (role and css
- * template), a sub-group `hint` (the class and data-type tokens of the trigger and its cell that
- * set some members apart: a number column against a text column; tokens on one member only, a
- * column's own id, are its data and are dropped), and `text`: the part of its name the members do
- * not share ("Employee id" of "Employee id column, more actions"). Returns Map css -> that.
+ * Repeated click triggers on one node (a ▾ per column header, a kebab per row, a chip per shift):
+ * ROW_MIN or more non-link candidates of one role and css template whose names follow one pattern.
+ * Two kinds of pattern:
+ *   words  the names share words ("<column> column, more actions") or are one name for all
+ *          (a kebab per row);
+ *   data   the names differ but read alike once their data is normalised (`normaliseData`): every
+ *          shift chip of a planner is "<name>, <day> <date>, <time>-<time>", every empty day cell
+ *          "<name>, <day> <date>". Such members get `pattern`, and the walker samples them strictly,
+ *          K per (page template, group, pattern), whatever each one opens.
+ * A toolbar of different commands (Approve, Sign-off, Team A) is neither: no shared words, no
+ * data in the names, so each fires and keeps its own name.
+ * Each member gets its group (role and css template), a sub-group `hint` (the class and data-type
+ * tokens of the trigger and its cell that set some members apart: a number column against a text
+ * column; tokens on one member only, a column's own id, are its data and are dropped), and `text`:
+ * the part of its name the members do not share ("Employee id" of "Employee id column, more
+ * actions"; a data member's whole name). Returns Map css -> that.
  */
 export function clickGroups(candidates) {
   const by = new Map();
@@ -181,10 +193,32 @@ export function clickGroups(candidates) {
     (by.get(g) ?? by.set(g, []).get(g)).push(c);
   }
   const out = new Map();
-  for (const [group, list] of by) {
-    if (new Set(list.map((c) => c.css)).size < ROW_MIN) continue;
+  const hintsOf = (list) => {
     const freq = new Map();
     for (const c of list) for (const t of new Set(c.hint ?? [])) freq.set(t, (freq.get(t) ?? 0) + 1);
+    return (c) => [...new Set(c.hint ?? [])].filter((t) => TYPE_TOKEN.test(t) || (freq.get(t) >= 2 && freq.get(t) < list.length)).sort().join(" ");
+  };
+  for (const [group, all] of by) {
+    if (new Set(all.map((c) => c.css)).size < ROW_MIN) continue;
+    // data patterns first: members whose names differ only by their data
+    const byPattern = new Map();
+    for (const c of all) {
+      const pat = normaliseData(String(c.name ?? "")).replace(/\s+/g, " ").trim();
+      if (DATA_PLACEHOLDER.test(pat)) (byPattern.get(pat) ?? byPattern.set(pat, []).get(pat)).push(c);
+    }
+    const taken = new Set();
+    for (const [pattern, list] of byPattern) {
+      if (new Set(list.map((c) => c.css)).size < ROW_MIN || new Set(list.map((c) => c.name)).size < 2) continue;
+      const hintOf = hintsOf(list);
+      for (const c of list) {
+        const hint = hintOf(c);
+        out.set(c.css, { group, hint, text: String(c.name ?? "").trim(), pattern, id: rowId(`${group}|${hint}|${pattern}`) });
+        taken.add(c);
+      }
+    }
+    const list = all.filter((c) => !taken.has(c));
+    if (new Set(list.map((c) => c.css)).size < ROW_MIN) continue;
+    const hintOf = hintsOf(list);
     const names = list.map((c) => String(c.name ?? ""));
     let pre = names[0];
     let suf = names[0];
@@ -200,7 +234,7 @@ export function clickGroups(candidates) {
     // is not one: each fires and keeps its own name.
     if (!/\p{L}/u.test(pre + suf) && new Set(names).size > 1) continue;
     for (const c of list) {
-      const hint = [...new Set(c.hint ?? [])].filter((t) => TYPE_TOKEN.test(t) || (freq.get(t) >= 2 && freq.get(t) < list.length)).sort().join(" ");
+      const hint = hintOf(c);
       const nm = String(c.name ?? "");
       const text = nm.length > pre.length + suf.length ? nm.slice(pre.length, nm.length - suf.length).trim() : "";
       out.set(c.css, { group, hint, text, id: rowId(`${group}|${hint}`) });
