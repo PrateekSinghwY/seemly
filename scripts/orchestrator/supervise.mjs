@@ -39,7 +39,8 @@ export function parse(argv) {
   const pass = [];
   for (let i = 0; i < argv.length; i++) {
     const m = /^--([^=]+)(?:=(.*))?$/.exec(argv[i]);
-    if (m && OWN[m[1]]) own[m[1]] = m[2] ?? argv[++i];
+    if (m && m[1] === "no-login") own["no-login"] = true;
+    else if (m && OWN[m[1]]) own[m[1]] = m[2] ?? argv[++i];
     else pass.push(argv[i]);
   }
   const flag = (name) => {
@@ -156,7 +157,9 @@ export async function main(argv) {
   const { own, pass, dir, loginPattern, maxNodes } = parse(argv);
   if (own.workers !== undefined) throw new Error("--workers is not supported: store.mjs rewrites graph.json whole with no lock or merge, so concurrent explores on one dir lose nodes. Run one supervise per dir copy (--dir <copy> --only-prefix /area).");
   const stateFile = own.state ?? process.env.SEEMLY_STORAGE_STATE;
-  if (!stateFile) throw new Error("supervise needs a saved login: --state <file> or SEEMLY_STORAGE_STATE");
+  // An app with no login (a local clone) runs with --no-login: a lost session then stops the run.
+  const noLogin = own["no-login"] !== undefined;
+  if (!stateFile && !noLogin) throw new Error("supervise needs a saved login (--state <file> or SEEMLY_STORAGE_STATE), or --no-login for an app without one");
   const meta = counts(dir).meta;
   if (!meta.origin) throw new Error("run init first");
   const chunk = own.chunk ?? maxNodes ?? "25";
@@ -174,7 +177,7 @@ export async function main(argv) {
   };
   const explorePass = pass.filter((a, i) => !(a === "--max-nodes" || a.startsWith("--max-nodes=") || (i > 0 && pass[i - 1] === "--max-nodes")));
   if (own["relogin-wait"] !== undefined) log("note: --relogin-wait ignored; supervise waits for the sign-in itself");
-  const env = { SEEMLY_STORAGE_STATE: stateFile, SEEMLY_AGENT: process.env.SEEMLY_AGENT ?? "supervise" };
+  const env = { ...(stateFile ? { SEEMLY_STORAGE_STATE: stateFile } : {}), SEEMLY_AGENT: process.env.SEEMLY_AGENT ?? "supervise" };
 
   const runChunk = (n) =>
     run([RUN, "explore", "--dir", dir, ...explorePass.filter((a, i) => !(a === "--dir" || (i > 0 && explorePass[i - 1] === "--dir"))), "--max-nodes", String(chunk)], {
@@ -183,6 +186,7 @@ export async function main(argv) {
     });
 
   const waitForLogin = async () => {
+    if (!stateFile) { log("session lost on an app run with --no-login: nothing to wait for"); return false; }
     const since = new Date().toISOString();
     log(`WAITING FOR SIGN-IN since ${since}`);
     const deadline = Date.now() + maxWait;

@@ -147,3 +147,10 @@ test("resume: after the human signs in again, supervise re-exports, proves the l
     w.server.close();
   }
 });
+
+import { parse as parseSupervise } from "../supervise.mjs";
+test("supervise: --no-login is a bare flag and takes no value", () => {
+  const { own, pass } = parseSupervise(["--no-login", "--dir", "x", "--allow-post", ".*"]);
+  assert.equal(own["no-login"], true);
+  assert.deepEqual(pass, ["--dir", "x", "--allow-post", ".*"]);
+});
