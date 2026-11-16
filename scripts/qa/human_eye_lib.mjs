@@ -3,7 +3,9 @@
 // overlay when the node is one). No top-level effects: importing this runs nothing.
 //
 //   inspect        in-page (page.evaluate): stand-in and broken images, clipped text, dead links,
-//                  sideways page overflow (page scope only)
+//                  sideways page overflow (page scope only), text painted over other text
+//                  (text-overlap), text controls with no gap that read as one word
+//                  (controls-touching)
 //   unnamed        a button, link or field with no accessible name, from the AX tree
 //   deadControls   an enabled control that does nothing when clicked: no DOM change, no
 //                  navigation, no request in a second. The caller aborts writes in the context.
@@ -59,7 +61,133 @@ export function inspect({ scopeCss = null } = {}) {
 
   if (root === document.body && document.documentElement.scrollWidth > document.documentElement.clientWidth + 1) findings.push({ kind: "page-overflow", where: "html", detail: `${document.documentElement.scrollWidth}px wide in a ${document.documentElement.clientWidth}px viewport` });
   for (const a of root.querySelectorAll('a[href="#"],a[href=""],a[href^="javascript:void"]')) if (visible(a) && !a.getAttribute("role")) findings.push({ kind: "dead-link", where: where(a), detail: text(a.innerText) || "(no text)" });
+
+  findings.push(...textOverlap(root, { visible, text, where }), ...controlsTouching(root, { visible, text, where }));
   return findings;
+
+  // Text painted over text: leaf text-node line boxes (Range.getClientRects) from two different
+  // blocks intersecting by more than 2px both ways, measured on the part no overflow ancestor
+  // clips. Text in a different stacking layer (an absolute/fixed/sticky box, or a dialog, menu,
+  // listbox or tooltip) is meant to sit over other content and is only compared within its layer.
+  // Seen 2026-11-16: flex rows with min-height 0 shrank below their wrapped text in a scroller.
+  function textOverlap(root, { visible, text, where }) {
+    const TOL = 2;
+    const LAYER_ROLES = new Set(["dialog", "alertdialog", "menu", "listbox", "tooltip"]);
+    const info = new Map();
+    const of = (el) => {
+      if (info.has(el)) return info.get(el);
+      let clip = { l: -Infinity, t: -Infinity, r: Infinity, b: Infinity };
+      let layer = null;
+      let block = null;
+      let fixed = false;
+      for (let e = el; e && e !== document.documentElement; e = e.parentElement) {
+        const cs = getComputedStyle(e);
+        if (!block && !/^inline$|^contents$/.test(cs.display)) block = e;
+        if (!layer && (LAYER_ROLES.has(e.getAttribute("role")) || /absolute|fixed|sticky/.test(cs.position))) layer = e;
+        if (!fixed && cs.display !== "contents" && (cs.overflowX !== "visible" || cs.overflowY !== "visible")) {
+          const r = e.getBoundingClientRect();
+          const l = r.left + e.clientLeft;
+          const t = r.top + e.clientTop;
+          clip = { l: Math.max(clip.l, l), t: Math.max(clip.t, t), r: Math.min(clip.r, l + e.clientWidth), b: Math.min(clip.b, t + e.clientHeight) };
+        }
+        if (cs.position === "fixed") fixed = true; // a fixed box escapes every overflow above it
+      }
+      const v = { clip, layer, block };
+      info.set(el, v);
+      return v;
+    };
+    const lines = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode: (n) => (n.textContent.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT) });
+    const range = document.createRange();
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      const el = n.parentElement;
+      if (!el || /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE|OPTION|TEXTAREA)$/.test(el.tagName) || !visible(el)) continue;
+      if (/rgba\(.*,\s*0\)$|transparent/.test(getComputedStyle(el).color)) continue;
+      const { clip, layer, block } = of(el);
+      range.selectNodeContents(n);
+      for (const r of range.getClientRects()) {
+        const box = { l: Math.max(r.left, clip.l), t: Math.max(r.top, clip.t), r: Math.min(r.right, clip.r), b: Math.min(r.bottom, clip.b) };
+        if (box.r - box.l > TOL && box.b - box.t > TOL) lines.push({ ...box, node: n, el, layer, block });
+      }
+    }
+    lines.sort((a, b) => a.t - b.t);
+    const out = [];
+    const seen = new Set();
+    for (let i = 0; i < lines.length && out.length < 20; i++) {
+      const a = lines[i];
+      for (let j = i + 1; j < lines.length && lines[j].t < a.b - TOL; j++) {
+        const b = lines[j];
+        if (a.node === b.node || a.block === b.block || a.layer !== b.layer) continue;
+        if (Math.min(a.r, b.r) - Math.max(a.l, b.l) <= TOL || Math.min(a.b, b.b) - Math.max(a.t, b.t) <= TOL) continue;
+        const key = `${where(a.el)}|${where(b.el)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ kind: "text-overlap", where: where(a.el), detail: `"${text(a.node.textContent, 30)}" painted over "${text(b.node.textContent, 30)}" [${where(b.el)}]` });
+        break;
+      }
+    }
+    return out;
+  }
+
+  // Two text controls on one row with under 4px between their boxes and under a space's width
+  // (0.25em) between their text read as one word ("BackSubmit"). Icon-only controls, text fields
+  // and a role=group/toolbar whose items are divided by a visible border or separator are skipped.
+  // Seen 2026-11-16: a justify-end footer around a justify-between child collapsed to 0px.
+  function controlsTouching(root, { visible, text, where }) {
+    const SEL = "button,a[href],[role=button],input,select";
+    const label = (el) => {
+      if (el.tagName === "INPUT") return /^(button|submit|reset)$/.test(el.type) ? el.value : "";
+      if (el.tagName === "SELECT") return el.selectedOptions?.[0]?.text ?? "";
+      return el.innerText ?? "";
+    };
+    const textBox = (el, r) => {
+      if (!/^(INPUT|SELECT)$/.test(el.tagName)) {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const t = range.getBoundingClientRect();
+        if (t.width > 0) return t;
+      }
+      const cs = getComputedStyle(el);
+      const px = (p) => parseFloat(cs[p]) || 0;
+      return { left: r.left + px("borderLeftWidth") + px("paddingLeft"), right: r.right - px("borderRightWidth") - px("paddingRight") };
+    };
+    const ctrls = [];
+    for (const el of root.querySelectorAll(SEL)) {
+      if (!visible(el) || (el.tagName === "INPUT" && el.type === "hidden")) continue;
+      if (el.parentElement?.closest(SEL)) continue; // nested inside another control
+      const name = text(label(el), 40);
+      if (!name) continue; // icon-only or a text field
+      const r = el.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) continue;
+      ctrls.push({ el, r, name, tb: textBox(el, r), em: parseFloat(getComputedStyle(el).fontSize) || 16 });
+    }
+    const border = (cs, side) => parseFloat(cs[`border${side}Width`]) > 0 && cs[`border${side}Style`] !== "none" && !/rgba\(.*,\s*0\)$|transparent/.test(cs[`border${side}Color`]);
+    const divided = (a, b) => {
+      const group = a.el.closest("[role=group],[role=toolbar]");
+      if (!group || !group.contains(b.el)) return false;
+      if (border(getComputedStyle(a.el), "Right") || border(getComputedStyle(b.el), "Left")) return true;
+      return [...group.querySelectorAll("[role=separator],hr")].some((s) => {
+        const r = s.getBoundingClientRect();
+        return visible(s) && r.left >= a.r.right - 1 && r.right <= b.r.left + 1;
+      });
+    };
+    const out = [];
+    for (const a of ctrls) {
+      let best = null;
+      for (const b of ctrls) {
+        if (b === a || b.r.left <= a.r.left || b.r.right <= a.r.right) continue;
+        const vo = Math.min(a.r.bottom, b.r.bottom) - Math.max(a.r.top, b.r.top);
+        if (vo <= 0.5 * Math.min(a.r.height, b.r.height)) continue;
+        const gap = b.r.left - a.r.right;
+        if (!best || gap < best.gap) best = { b, gap };
+      }
+      if (!best || best.gap >= 4) continue;
+      const b = best.b;
+      if (b.tb.left - a.tb.right >= 0.25 * Math.min(a.em, b.em) || divided(a, b)) continue;
+      out.push({ kind: "controls-touching", where: where(a.el), detail: `"${a.name}" and "${b.name}" ${Math.round(best.gap)}px apart, read as "${a.name}${b.name}"` });
+    }
+    return out;
+  }
 }
 
 const NAMED = new Set(["button", "link", "textbox", "combobox", "checkbox", "radio", "switch", "tab", "menuitem", "slider", "spinbutton", "searchbox", "listbox", "option"]);

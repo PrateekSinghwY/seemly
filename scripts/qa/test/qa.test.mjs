@@ -140,6 +140,41 @@ test("human_eye: stand-in image, clipped text, unnamed and dead controls, overfl
   }
 });
 
+// 2026-11-16 (UKG): flex rows with min-height 0 shrank in a scroller and painted wrapped text
+// over the next row; a justify-end footer around a justify-between child put "Back" and
+// "Submit" 0px apart. The clean page holds the look-alikes that must not fire: a menu laid over
+// text, a bordered toolbar with no gaps, a padded pill beside a link, inline links split by a space.
+const BTN = "border:0;background:none;padding:0;font:inherit;color:#036";
+const OVERLAP = page(`<h1>Request</h1>
+<ul style="display:flex;flex-direction:column;height:100px;width:140px;overflow-y:auto;margin:0;padding:0;list-style:none">
+${["Morning shift swap request", "Evening shift cover request", "Weekend availability change", "Holiday time off request"].map((t) => `<li style="min-height:0;flex:1 1 auto;line-height:20px">${t}</li>`).join("")}
+</ul>
+<footer style="display:flex;justify-content:flex-end;width:400px"><button style="${BTN}">Back</button><div style="display:flex;justify-content:space-between"><a href="/submit" style="color:#036">Submit</a><button style="${BTN};padding:4px 12px;border-radius:12px;background:#036;color:#fff">Review</button></div></footer>`);
+const LOOKALIKES = page(`<h1>Request</h1>
+<div style="position:relative"><p>Shift notes for the week ahead are listed here.</p>
+<div role="menu" style="position:absolute;top:0;left:0;background:#fff;border:1px solid #888"><button role="menuitem" style="${BTN}">Open details</button></div></div>
+<div role="toolbar" aria-label="Format" style="display:flex"><button style="${BTN}">Bold</button><button style="${BTN};border-left:1px solid #888">Italic</button><button style="${BTN};border-left:1px solid #888">Underline</button></div>
+<footer style="display:flex;gap:2px"><a href="/submit" style="color:#036">Submit</a><button style="${BTN};padding:4px 12px;border-radius:12px;background:#036;color:#fff">Review</button></footer>
+<p><a href="/a">Today</a> <a href="/b">Tomorrow</a></p>`);
+
+test("human_eye: text painted over text and controls touching fail; overlays and toolbars pass", { skip, timeout: 300_000 }, async () => {
+  const bad = await serve(site(OVERLAP));
+  const ok = await serve(site(LOOKALIKES));
+  const cwd = mkdtempSync(join(tmpdir(), "qa-"));
+  try {
+    const r = await run("human_eye.mjs", ["--url", `${bad.base}/request`, "--width", "1280"], cwd);
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /text-overlap .*request/i);
+    assert.match(r.out, /controls-touching .*"Back" and "Submit" 0px apart/);
+    assert.doesNotMatch(r.out, /"Submit" and "Review"/);
+    const clean = await run("human_eye.mjs", ["--url", `${ok.base}/request`, "--width", "1280"], cwd);
+    assert.equal(clean.code, 0, clean.out);
+  } finally {
+    bad.server.close();
+    ok.server.close();
+  }
+});
+
 test("write_roundtrip: a write that persists passes; one that only answers 200 fails", { skip, timeout: 300_000 }, async () => {
   const store = { name: "Seaside Flat" };
   const app = await serve((req, res) => {

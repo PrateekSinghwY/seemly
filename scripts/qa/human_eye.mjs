@@ -7,6 +7,10 @@
 //   clipped text      cut off by overflow with no ellipsis, sideways or by line height
 //   unnamed controls  a button, link or field with no accessible name (from the AX tree)
 //   page overflow     the document scrolls sideways
+//   text overlap      one block's text painted over another's (rows shrunk below their text);
+//                     overlays (absolute/fixed/sticky, dialog, menu, listbox, tooltip) excepted
+//   controls touching two text controls on one row, <4px apart, reading as one word
+//                     ("BackSubmit"); icon-only and bordered toolbar/group items excepted
 //   dead controls     (--dead-controls) an enabled control that does nothing when clicked:
 //                     no DOM change, no navigation, no request in a second. Writes are aborted
 //                     so the sweep cannot dirty the clone's DB.
