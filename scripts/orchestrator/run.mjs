@@ -53,6 +53,8 @@
 //     verify --ref <dir>... --clone <dir> [--scope id] [--node id] [--masks masks.json] [--writes writes.json]
 //            [--styles-allow styles-allow.json] [--ws-map ws-map.json] [--dead-controls]
 //            [--ref-prefix p] [--clone-prefix p] [--dpr 1] [--api url] [--web url] [--pair-map pair-map.json]
+//            [--shard i/n]                  this run takes pairs i, i+n, ...; graph.json merged once at the end, under verify.lock
+//     verify --merge --clone <dir>     fold every verify/<node>/verify.json into graph.json (after a crashed shard)
 //     report [--clone <dir>] [--scope id] [--pair-map pair-map.json] [--out report.md]
 //                                     page pairing source, then ref node -> clone node -> each check -> reason
 //   views
@@ -73,7 +75,7 @@ import { compare, pairNodes, readPairMap, toMarkdown } from "./compare.mjs";
 import { dedupeClicks, dedupeRows } from "./bound.mjs";
 import { breadcrumbFromAria, edgeId, isRetryableReason, tagScopes } from "./graph.mjs";
 import { open, save } from "./store.mjs";
-import { countsLine, report, verify, verifyCounts, writePairs } from "./verify.mjs";
+import { countsLine, mergeVerifyRecords, parseShard, report, verify, verifyCounts, writePairs } from "./verify.mjs";
 import { writeLive, writeTree } from "./views.mjs";
 import { acquire } from "./walk-lock.mjs";
 import { labelCounts } from "./relabel.mjs";
@@ -141,6 +143,8 @@ const { values: o, positionals } = parseArgs({
     "pair-map": { type: "string" },
     scope: { type: "string" },
     node: { type: "string" },
+    shard: { type: "string" },
+    merge: { type: "boolean", default: false },
     masks: { type: "string" },
     writes: { type: "string" },
     "ref-prefix": { type: "string", default: "" },
@@ -575,8 +579,15 @@ switch (cmd) {
     break;
   }
   case "verify": {
+    if (o.merge) {
+      if (!o.clone?.length) throw new Error("verify --merge needs --clone <clone graph dir>");
+      say(`merged ${mergeVerifyRecords(o.clone[0])} pair summary(ies) into ${join(o.clone[0], "graph.json")}`);
+      say(`VERIFY  ${countsLine(verifyCounts(o.clone[0], o.scope))}`);
+      break;
+    }
     if (!o.ref?.length || !o.clone?.length) throw new Error("verify needs --ref <ref graph dir>... --clone <clone graph dir>");
     const r = await verify({
+      shard: parseShard(o.shard),
       refDirs: o.ref, cloneDir: o.clone[0], scope: o.scope, node: o.node, masks: o.masks, writes: o.writes,
       stylesAllow: o["styles-allow"], wsMap: o["ws-map"], deadControls: o["dead-controls"],
       refPrefix: o["ref-prefix"], clonePrefix: o["clone-prefix"], dpr: +o.dpr, height: +o.height, api: o.api, web: o.web,

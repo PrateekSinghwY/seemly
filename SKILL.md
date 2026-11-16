@@ -626,6 +626,14 @@ right-click, a key, a drag, typed values, a fixture file), each check a record i
 `<clone>/verify/<node>/<check>.json`. The clone must be walked with the same `--keyboards` as
 the reference, so its edges can be compared.
 
+**Parallel verify on one clone dir: `--shard i/n`.** Paths may be relative (verify resolves the
+clone dir and every file it hands a QA child to absolute). Several `O verify` processes may run on
+one dir at once: each graph.json write is a read-modify-write under `<clone>/verify.lock`, and
+each pair's summary also lands in `<clone>/verify/<node>/verify.json`. To split the work, run
+`O verify ... --shard 0/4` to `--shard 3/4` side by side: shard i takes pairs i, i+n, ... and
+merges its results into graph.json once, at its end. A shard that died before merging is
+recovered with `O verify --merge --clone <dir>` (newest summary per node wins).
+
 **Pair pages across URL schemes with `--pair-map`.** A clone rarely keeps the reference's routes
 (`/metaui#/list/X` on the reference, `/administration/x` on the clone); pairing by identical view
 key alone then pairs nothing and every reference node lands in ref-only, so no check runs. Write

@@ -32,8 +32,8 @@
 // readLabels rules (info.labelsVersion below LABELS_VERSION): "stale labels, run O relabel".
 
 import { execFile } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { deflateSync, inflateSync } from "node:zlib";
 import * as zlib from "node:zlib";
@@ -45,6 +45,7 @@ import { deadControls, inspect, unnamed } from "../qa/human_eye_lib.mjs";
 import { readLabels } from "../qa/labels.mjs";
 import { staleLabels } from "./relabel.mjs";
 import { edgeDiff, interactionsReason, pairNodes } from "./compare.mjs";
+import { alive } from "./walk-lock.mjs";
 import { UNSCOPED } from "./graph.mjs";
 import { toSrgb } from "./png-color.mjs";
 import { open, save } from "./store.mjs";
@@ -431,7 +432,95 @@ export function readPairs(cloneDir) {
 
 export function writePairs(cloneDir, doc) {
   mkdirSync(cloneDir, { recursive: true });
-  writeFileSync(join(cloneDir, "pairs.json"), JSON.stringify(doc, null, 1));
+  // tmp + rename: parallel shards write the same document, and a reader never sees half of it
+  const tmp = join(cloneDir, `pairs.json.${process.pid}.tmp`);
+  writeFileSync(tmp, JSON.stringify(doc, null, 1));
+  renameSync(tmp, join(cloneDir, "pairs.json"));
+}
+
+// ---------- the clone graph, shared by parallel verify runs ----------
+
+export const VERIFY_LOCK = "verify.lock";
+/** Each pair's verify summary, beside its check records: what `O verify --merge` folds back into graph.json. */
+export const VERIFY_SUMMARY = "verify.json";
+
+const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+/**
+ * Run `fn` holding `<cloneDir>/verify.lock` (O_EXCL create). A lock whose pid is no longer running
+ * is stale and taken over. Every graph.json write from verify goes through here, so parallel runs
+ * on one dir read-modify-write the graph one at a time instead of overwriting each other.
+ */
+export function withVerifyLock(cloneDir, fn, { timeoutMs = 120_000 } = {}) {
+  const file = join(cloneDir, VERIFY_LOCK);
+  const until = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const fd = openSync(file, "wx");
+      writeSync(fd, String(process.pid));
+      closeSync(fd);
+      break;
+    } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+      let pid = NaN;
+      try {
+        pid = Number(readFileSync(file, "utf8").trim());
+      } catch {}
+      if (Number.isInteger(pid) && pid > 0 && !alive(pid)) rmSync(file, { force: true });
+      else if (Date.now() > until) throw new Error(`${file} held by pid ${pid} for over ${timeoutMs / 1000}s`);
+      else sleepSync(25);
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    rmSync(file, { force: true });
+  }
+}
+
+/**
+ * Fold verify summaries ([{ id, verify }]) into the clone graph on disk, under the lock: re-read
+ * graph.json, set each node's `verify` and status, save. A summary older than the one the node
+ * already has (by `verify.at`) is kept out, so a late merge never undoes a newer run.
+ */
+export function mergeVerify(cloneDir, entries) {
+  if (!entries.length) return 0;
+  return withVerifyLock(cloneDir, () => {
+    const g = open(cloneDir);
+    let n = 0;
+    for (const { id, verify: v } of entries) {
+      const cn = g.data.nodes[id];
+      if (!cn || (cn.verify?.at && v.at && cn.verify.at > v.at)) continue;
+      cn.verify = v;
+      if (v.passed && cn.status !== "verified") g.setStatus(id, "verified");
+      else if (!v.passed && cn.status === "verified") g.setStatus(id, "closed");
+      n++;
+    }
+    save(g, cloneDir);
+    return n;
+  });
+}
+
+/** Every pair summary under <cloneDir>/verify/<node>/verify.json, merged into graph.json (`O verify --merge`). */
+export function mergeVerifyRecords(cloneDir) {
+  cloneDir = resolve(cloneDir);
+  const root = join(cloneDir, "verify");
+  const entries = [];
+  for (const id of existsSync(root) ? readdirSync(root) : []) {
+    const p = join(root, id, VERIFY_SUMMARY);
+    if (existsSync(p)) entries.push({ id, verify: JSON.parse(readFileSync(p, "utf8")) });
+  }
+  return mergeVerify(cloneDir, entries);
+}
+
+/** "i/n" -> { i, n }: shard i (0-based) of n takes every pair whose index mod n is i. */
+export function parseShard(s) {
+  if (s === undefined || s === null || s === "") return null;
+  const m = /^(\d+)\/(\d+)$/.exec(String(s));
+  const i = m ? Number(m[1]) : NaN;
+  const n = m ? Number(m[2]) : NaN;
+  if (!m || n < 1 || i >= n) throw new Error(`--shard wants i/n with 0 <= i < n, got ${s}`);
+  return { i, n };
 }
 
 /** The pairs document narrowed to one scope (the reference node's tag; clone-only by the clone's tag, else by view key). */
@@ -623,7 +712,8 @@ function runQa(script, args, cwd, recordName) {
   return new Promise((resolve) => {
     execFile(process.execPath, [join(QA, script), ...args], { cwd, env: { ...process.env, RL_REPO: REPO, SEEMLY_DISCOVERY: join(cwd, "d") }, timeout: 600_000, maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) => {
       const p = join(cwd, "never_to_be_pushed", "discovery", "checks", `${recordName}.json`);
-      resolve({ code: err?.code ?? 0, out: `${stdout}${stderr}`, record: existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) : null });
+      const code = err ? (err.code ?? (err.signal ? `signal ${err.signal}` : 1)) : 0;
+      resolve({ code, out: `${stdout}${stderr}`, stdout: String(stdout), stderr: String(stderr), record: existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) : null });
     });
   });
 }
@@ -648,6 +738,18 @@ function refWrites(pair, refEdges, pendingByDir) {
   const edges = Object.values(refEdges.get(pair.ref.dir) ?? {}).filter((e) => e.from === pair.ref.id && e.kind === "write").map((e) => e.element?.name ?? e.id);
   const pend = (pendingByDir.get(pair.ref.dir) ?? []).filter((p) => p.node === pair.ref.id).map((p) => p.element?.name ?? p.key);
   return [...new Set([...edges, ...pend])];
+}
+
+/**
+ * The last lines a crashed QA child printed, for its check record: blank lines and Node's closing
+ * "Node.js vX" banner dropped, so the reason names the error instead of the runtime version.
+ */
+export function outputTail(r, { lines = 8, chars = 900 } = {}) {
+  const pick = (s) => String(s ?? "").split("\n").map((l) => l.trimEnd()).filter((l) => l.trim() && !/^Node\.js v\d/.test(l.trim()));
+  const tail = [...pick(r.stderr), ...pick(r.stdout)].slice(-lines);
+  const all = tail.length ? tail : pick(r.out).slice(-lines);
+  const text = all.join(" | ");
+  return `exit ${r.code}: ${text.length > chars ? `...${text.slice(-chars)}` : text || "(no output)"}`;
 }
 
 function loadJsonl(p) {
@@ -695,18 +797,26 @@ function refWsReads(art, inv) {
  * `stylesAllow` (styles-allow.json), `wsMap` (ws-map.json), `deadControls` (click every enabled
  * control of every clone node, writes aborted), `refPrefix`/`clonePrefix` (API path prefixes),
  * `dpr`, `height` (viewport), `api`/`web` (clone bases for the round trip), `pairMap` (readPairMap:
- * reference view -> clone view, compare.mjs pairPages). Returns the per-pair
- * results; saves records, pairs.json and the graph.
+ * reference view -> clone view, compare.mjs pairPages), `shard` ("i/n" or { i, n }: pairs i, i+n, ...,
+ * merged into graph.json once at the end). Returns the per-pair results; saves records, each
+ * pair's verify.json summary, pairs.json and the graph (under verify.lock).
  */
 export async function verify({
   refDirs, cloneDir, scope, node, masks: masksFile, writes: writesFile, stylesAllow: stylesAllowFile, wsMap: wsMapFile, deadControls: dead = false,
-  refPrefix = "", clonePrefix = "", dpr = 1, height = 900, api, web, pairMap = null, log = (s) => console.error(s),
+  refPrefix = "", clonePrefix = "", dpr = 1, height = 900, api, web, pairMap = null, shard = null, log = (s) => console.error(s),
 } = {}) {
-  refDirs = [refDirs].flat();
+  // Absolute from here on: QA children run in their own folders, so a path relative to the
+  // caller's cwd (a relative --clone, --writes) would point nowhere inside them.
+  const abs = (p) => (p ? resolve(p) : p);
+  refDirs = [refDirs].flat().map(abs);
+  cloneDir = abs(cloneDir);
+  [masksFile, writesFile, stylesAllowFile, wsMapFile] = [masksFile, writesFile, stylesAllowFile, wsMapFile].map(abs);
+  shard = typeof shard === "string" ? parseShard(shard) : shard;
   const doc = pairNodes(refDirs, [cloneDir], { pairMap });
   writePairs(cloneDir, doc);
   let pairs = scopePairs(doc, scope).pairs;
   if (node) pairs = pairs.filter((p) => p.ref.id === node || p.clone.id === node);
+  if (shard) pairs = pairs.filter((_, k) => k % shard.n === shard.i);
   const cfg = masksFile ? JSON.parse(readFileSync(masksFile, "utf8")) : {};
   const writeRows = writesFile ? JSON.parse(readFileSync(writesFile, "utf8")) : [];
   const stylesAllow = readStylesAllow(readJson(stylesAllowFile) ?? {});
@@ -752,6 +862,7 @@ export async function verify({
   const { chromium } = pairs.length ? await playwright() : {};
   const browser = pairs.length ? await chromium.launch({ args: SRGB_ARGS }) : null;
   const results = [];
+  const pending = [];
   try {
     for (const pair of pairs) {
       const cn = g.node(pair.clone.id);
@@ -946,22 +1057,28 @@ export async function verify({
           writeFileSync(spec, JSON.stringify(rows.map(({ node: _n, at: _a, ...r }) => r), null, 1));
           const r = await runQa("write_roundtrip.mjs", ["--spec", spec, "--api", api ?? origin, "--web", web ?? origin], join(runs, `writes-${cn.id}`), "write_round_trip");
           const fails = r.out.split("\n").filter((l) => /^ {4}\S/.test(l)).map((l) => l.trim());
-          if (!r.record) put("writes", { ran: false, count: rows.length, status: "skipped", reason: `write_roundtrip.mjs did not run: ${r.out.trim().split("\n").slice(-2).join(" ")}` });
-          else put("writes", { ran: true, count: rows.length, status: r.record.status, reason: r.record.status === "pass" ? null : fails.join(" | ") || r.record.reason }, { needed, rows: rows.map((x) => x.name), output: r.out });
+          const detail = { needed, rows: rows.map((x) => x.name), spec, exit: r.code, output: r.out };
+          if (!r.record) put("writes", { ran: false, count: rows.length, status: "skipped", reason: `write_roundtrip.mjs did not run (${outputTail(r)})` }, detail);
+          else {
+            const why = r.record.status === "pass" ? null : fails.join(" | ") || r.record.reason || (r.code !== 0 ? outputTail(r) : null);
+            put("writes", { ran: true, count: rows.length, status: r.code !== 0 && r.record.status === "pass" ? "fail" : r.record.status, reason: r.code !== 0 && r.record.status === "pass" ? `write_roundtrip.mjs passed its rows then crashed (${outputTail(r)})` : why }, detail);
+          }
         }
       }
       await context.close().catch(() => {});
 
       v.passed = CHECKS.every((c) => v[c] && (v[c].status === "pass" || v[c].status === "n/a")) && CHECKS.some((c) => v[c]?.status === "pass");
-      cn.verify = v;
-      if (v.passed && cn.status !== "verified") g.setStatus(cn.id, "verified");
-      else if (!v.passed && cn.status === "verified") g.setStatus(cn.id, "closed");
-      save(g, cloneDir);
+      // The summary lands beside the records first; graph.json takes it under the verify lock,
+      // per pair when this run is alone on the dir, once at the end for a shard (finally below).
+      writeFileSync(join(out, VERIFY_SUMMARY), JSON.stringify(v, null, 1) + "\n");
+      if (!shard) mergeVerify(cloneDir, [{ id: cn.id, verify: v }]);
+      else pending.push({ id: cn.id, verify: v });
       results.push({ pair, verify: v });
       log(`${v.passed ? "✓" : "✗"} ${pair.ref.label.slice(0, 50)} -> ${cn.id}  ${CHECKS.map((c) => `${c} ${v[c]?.status ?? "-"}`).join(" · ")}`);
     }
   } finally {
     await browser?.close().catch(() => {});
+    mergeVerify(cloneDir, pending);
   }
   return { results, pairs: doc };
 }
