@@ -67,8 +67,12 @@ export function styleDiff(ref, clone, { allow = { ceilings: {}, rows: [] }, igno
     const cs = C.get(key);
     if (!cs) continue;
     matched++;
+    // A border neither side draws (width 0 on both) has no visible style or colour: Tailwind's
+    // preflight computes "solid" where a browser default computes "none" on the same nothing.
+    const noBorder = /^0px$|^(0px ?){4}$/.test(rs.borderWidth ?? "") && /^0px$|^(0px ?){4}$/.test(cs.borderWidth ?? "");
     for (const prop of STYLE_PROPS) {
       if (!(prop in rs) && !(prop in cs)) continue;
+      if (noBorder && (prop === "borderStyle" || prop === "borderColor")) continue;
       const row = allow.rows.find((r) => r.re.test(key) && (!r.prop || r.prop === prop));
       const ceiling = Math.max(allow.ceilings[prop] ?? 0, row ? row.max : 0);
       if (!withinCeiling(rs[prop], cs[prop], ceiling)) diffs.push({ element: key, prop, ref: rs[prop], clone: cs[prop] });

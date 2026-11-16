@@ -103,3 +103,13 @@ test("records: writeCheckRecord takes an output folder; a style skipped as 'ref 
   assert.ok(nodeVerified(dir, node, "r1"));
   assert.deepEqual(CHECKS, ["pixels", "structure", "style", "human_eye", "widths", "api", "interactions", "writes"]);
 });
+
+// 2026-11-17 (UKG): every Tailwind element failed "border-style none vs solid" with no border drawn.
+test("styleDiff: border style and colour do not count where neither side draws a border", () => {
+  const el = (style) => ({ elements: [{ role: "banner", name: "", nth: 0, style }] });
+  const ref = el({ borderWidth: "0px", borderStyle: "none", borderColor: "rgb(231, 231, 231)" });
+  const clone = el({ borderWidth: "0px", borderStyle: "solid", borderColor: "rgb(229, 231, 235)" });
+  assert.equal(styleDiff(ref, clone).passed, true);
+  const drawn = el({ borderWidth: "1px", borderStyle: "solid", borderColor: "rgb(229, 231, 235)" });
+  assert.deepEqual(styleDiff(ref, drawn).diffs.map((d) => d.prop).sort(), ["borderColor", "borderStyle", "borderWidth"]);
+});
