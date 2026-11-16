@@ -175,6 +175,55 @@ test("human_eye: text painted over text and controls touching fail; overlays and
   }
 });
 
+// 2026-11-16 (UKG sweep, 238 page runs): each look-alike below fired before its fix. A drawer
+// laid over page buttons gave a negative gap (controls in another layer); Material glyph names
+// ("calendar_month", "more_vert") read as words; a row scrolled under a sticky tab strip, beside
+// a button outside the scroller, kept its full box. A label wrapping to three lines in a 36px
+// field with overflow visible painted past the field and nothing reported it.
+// The fixed drawer keeps its static position, so Close lands on Approve's row, over its left end.
+const DRAWER = page(`<h1>Request</h1>
+<aside role="dialog" aria-label="Filters" style="position:fixed;left:0;width:40px;background:#fff"><button style="${BTN};width:40px;margin-top:8px;text-align:left">Close</button></aside>
+<div style="padding:8px"><button style="${BTN}">Approve</button></div>`);
+const GLYPH = "display:inline-block;width:24px;white-space:nowrap;overflow:visible";
+const ICONS = page(`<h1>Request</h1>
+<button style="${BTN};display:inline-flex;align-items:center"><span class="material-symbols-outlined" style="${GLYPH}">calendar_month</span><span style="display:inline-block">Date</span><span style="font-family:'Material Icons';${GLYPH}">arrow_drop_down</span></button>
+<div style="display:flex"><button style="${BTN}">Filter</button><button style="${BTN}" aria-label="More"><span class="material-icons" style="${GLYPH}">more_vert</span></button></div>`);
+// Row 3 is scrolled above the scroller, level with Export; row 5 sits under the sticky strip,
+// level with Print.
+const STICKY = page(`<h1>Request</h1>
+<div style="display:flex;align-items:flex-start">
+<div id="sc" style="margin-top:48px;height:96px;width:200px;overflow-y:auto">
+<div style="position:sticky;top:0;height:24px;background:#fff;display:flex;gap:12px"><button style="${BTN}">Day</button><button style="${BTN}">Week</button></div>
+${Array.from({ length: 12 }, (_, i) => `<div style="height:24px;display:flex;justify-content:flex-end"><button style="${BTN}">Edit ${i + 1}</button></div>`).join("")}
+</div><div><div style="height:24px"><button style="${BTN}">Export</button></div><div style="height:24px"></div><div style="height:24px"><button style="${BTN}">Print</button></div></div></div>
+<script>document.getElementById("sc").scrollTop = 120</script>`);
+const SPILL = page(`<h1>Request</h1><div style="height:36px;width:110px;border:1px solid #888;margin-bottom:40px"><label style="display:block;line-height:18px">Scheduled hours in each pay period</label></div>`);
+const SPILL_OK = page(`<h1>Request</h1>${SR}
+<div style="height:36px;width:110px;border:1px solid #888"><label style="display:block;line-height:18px">Hours</label></div>
+<div style="height:36px;width:110px;border:1px solid #888;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Scheduled hours in each pay period</div>
+<div style="height:36px;width:110px;line-height:18px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">Scheduled hours in each pay period</div>`);
+
+test("human_eye: drawer over buttons, icon glyphs and rows under a sticky strip pass; text spilling out of a 36px field fails", { skip, timeout: 300_000 }, async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "qa-"));
+  for (const [name, html] of [["drawer", DRAWER], ["icons", ICONS], ["sticky", STICKY], ["spill-ok", SPILL_OK]]) {
+    const app = await serve(site(html));
+    try {
+      const r = await run("human_eye.mjs", ["--url", `${app.base}/request`, "--width", "1280"], cwd);
+      assert.equal(r.code, 0, `${name}: ${r.out}`);
+    } finally {
+      app.server.close();
+    }
+  }
+  const bad = await serve(site(SPILL));
+  try {
+    const r = await run("human_eye.mjs", ["--url", `${bad.base}/request`, "--width", "1280"], cwd);
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /text-spill .*"Scheduled hours in each pay period" paints \d+px past a 38px-high box/);
+  } finally {
+    bad.server.close();
+  }
+});
+
 test("write_roundtrip: a write that persists passes; one that only answers 200 fails", { skip, timeout: 300_000 }, async () => {
   const store = { name: "Seaside Flat" };
   const app = await serve((req, res) => {

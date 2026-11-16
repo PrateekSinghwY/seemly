@@ -9,8 +9,12 @@
 //   page overflow     the document scrolls sideways
 //   text overlap      one block's text painted over another's (rows shrunk below their text);
 //                     overlays (absolute/fixed/sticky, dialog, menu, listbox, tooltip) excepted
-//   controls touching two text controls on one row, <4px apart, reading as one word
-//                     ("BackSubmit"); icon-only and bordered toolbar/group items excepted
+//   controls touching two text controls in one layer and row, <4px apart, reading as one
+//                     word ("BackSubmit"); icon-only and bordered toolbar/group items excepted
+//   text spill        text painting past the edge of a box too small for it (a label wrapping
+//                     to three lines in a 36px field); line-clamp, ellipsis, sr-only excepted.
+//                     The three layout checks skip icon-font glyph names and measure only the
+//                     part of a box a person sees (scroll containers, sticky strips).
 //   dead controls     (--dead-controls) an enabled control that does nothing when clicked:
 //                     no DOM change, no navigation, no request in a second. Writes are aborted
 //                     so the sweep cannot dirty the clone's DB.

@@ -584,9 +584,9 @@ Per unit, in this order, none skipped:
    filtered read, never as a closing pass. Anything rendered is interactive: if a write needs a
    row the seed lacks, derive it from captured fields; otherwise do not render the thing.
 9. **Human-eye pass** (`scripts/qa/human_eye.mjs`, `--dead-controls` at unit end): no shared
-   stand-in image, no clipped text, no text painted over other text, no two text controls
-   touching so they read as one word, no unnamed control, no enabled control that leads
-   nowhere. A finding blocks done.
+   stand-in image, no clipped text, no text painted over other text, no text painting past the
+   edge of a box too small for it, no two text controls touching so they read as one word, no
+   unnamed control, no enabled control that leads nowhere. A finding blocks done.
 
 Reuse contract, gate-enforced:
 - one component per module archetype, one row each in `frontend/components/modules/REGISTRY.md`;
@@ -662,7 +662,7 @@ The five QA scripts (`scripts/qa/`, each writes its check record; each is proven
 |---|---|---|---|
 | `edition_gate.mjs` | Playwright on another edition, logged out, other theme or language than Chrome | seconds | preflight and before every capture |
 | `struct_audit.mjs` | invented or missing nav item, heading, tab, button, column header, field label | 2 loads a page | unit end, per member |
-| `human_eye.mjs` | stand-in images, broken images, clipped text, text painted over text, controls touching (read as one word), unnamed controls, sideways overflow; dead controls with `--dead-controls` | seconds; a reload per control with the flag | unit end |
+| `human_eye.mjs` | stand-in images, broken images, clipped text, text painted over text, text spilling past its box, controls touching (read as one word), unnamed controls, sideways overflow; dead controls with `--dead-controls` | seconds; a reload per control with the flag | unit end |
 | `write_roundtrip.mjs` | a write that answers 200 and never lands on a read or survives a reload | seconds a write | every unit with a write |
 | `width_sweep.mjs` | overflow and layout that break away from 1440 | 2 loads per width a page | PAGE COMPLETE and QA |
 | `frame_diff.mjs` | video mode, reference unreachable: a label the frame shows and the clone lacks, a region off by more than 4 px (atom) or 8 px (region), a role, count or order that differs from the spec | one load and two OCR passes a state | every state in `states.json`, unit end |
