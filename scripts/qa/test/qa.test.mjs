@@ -140,6 +140,25 @@ test("human_eye: stand-in image, clipped text, unnamed and dead controls, overfl
   }
 });
 
+// 2026-11-17 (UKG): a visually hidden "Skip to main content" link that moves focus to <main> was
+// reported dead: the click could not hit it, and a focus move was not counted as an effect.
+const FOCUS = page(`<a href="#q" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)"
+ onclick="event.preventDefault();document.getElementById('q').focus()">Skip to content</a>
+<button onclick="document.getElementById('q').focus()">Find</button><input id="q" aria-label="Query"><button>Refresh</button>`);
+
+test("human_eye: a control that only moves focus is live; a hidden skip link is activated by keyboard", { skip, timeout: 300_000 }, async () => {
+  const app = await serve(site(FOCUS));
+  const cwd = mkdtempSync(join(tmpdir(), "qa-"));
+  try {
+    const r = await run("human_eye.mjs", ["--url", `${app.base}/rates`, "--dead-controls", "--width", "1280"], cwd);
+    assert.match(r.out, /"Refresh" does nothing/);
+    assert.doesNotMatch(r.out, /"Find" does nothing/);
+    assert.doesNotMatch(r.out, /"Skip to content" does nothing/);
+  } finally {
+    app.server.close();
+  }
+});
+
 // 2026-11-16 (UKG): flex rows with min-height 0 shrank in a scroller and painted wrapped text
 // over the next row; a justify-end footer around a justify-between child put "Back" and
 // "Submit" 0px apart. The clean page holds the look-alikes that must not fire: a menu laid over

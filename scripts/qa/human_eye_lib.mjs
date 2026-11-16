@@ -9,7 +9,8 @@
 //                  (text-spill). Icon-font glyph names are not text to these three; boxes are
 //                  measured on the part a person sees (scroll containers, sticky strips).
 //   unnamed        a button, link or field with no accessible name, from the AX tree
-//   deadControls   an enabled control that does nothing when clicked: no DOM change, no
+//   deadControls   an enabled control that does nothing when clicked (or, when a pointer cannot
+//                  hit it, activated with Enter): no focus move, no DOM change, no
 //                  navigation, no request in a second. The caller aborts writes in the context.
 
 import { settle } from "../lib/pw.mjs";
@@ -346,11 +347,26 @@ export async function deadControls(page, { reset, scopeCss = null } = {}) {
     const target = page.locator(`[data-seemly-dead="${c.i}"]`).first();
     // Not there after the reset (the state did not come back): not evidence either way.
     const present = (await target.count()) > 0;
-    if (present) await target.click({ timeout: 3000 }).catch(() => {});
+    // Focus that moves to another element is an effect (a skip link, "focus the field" buttons).
+    // A control a pointer cannot hit (a visually hidden skip link) is activated from the keyboard
+    // instead, as a person would reach it: a failed click is not evidence that it does nothing.
+    const markFocus = () => page.evaluate(() => { window.__seemlyFocus = document.activeElement; }).catch(() => {});
+    const focusMoved = () => page.evaluate((i) => { const a = document.activeElement; return !!a && a !== window.__seemlyFocus && a !== document.body && a.dataset?.seemlyDead !== String(i); }, c.i).catch(() => false);
+    let moved = false;
+    if (present) {
+      await markFocus();
+      const clicked = await target.click({ timeout: 3000 }).then(() => true, () => false);
+      if (!clicked) {
+        await target.focus().catch(() => {});
+        await markFocus();
+        await page.keyboard.press("Enter").catch(() => {});
+      }
+    }
     await page.waitForTimeout(1000);
+    if (present) moved = await focusMoved();
     page.off("request", onReq);
     const mutations = await page.evaluate(() => window.__seemlyMut ?? 0).catch(() => 1);
-    if (present && !mutations && !requests && page.url() === before) found.push({ kind: "dead-control", where: `#${c.i}`, detail: `"${c.name || "(no name)"}" does nothing` });
+    if (present && !mutations && !requests && !moved && page.url() === before) found.push({ kind: "dead-control", where: `#${c.i}`, detail: `"${c.name || "(no name)"}" does nothing` });
   }
   return found;
 }
