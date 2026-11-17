@@ -49,6 +49,13 @@ errors go to the panel only when the human asks for consensus thinking. Never as
 push approval: push to the `feat/*` branch yourself after every slice, never to main,
 never open PRs.
 
+**Self-directed next prompt** (correction ukg-sandbox/12): show the `Next prompt`, then act on it
+yourself at once, as if it had been sent; the human never pastes it back.
+
+**When the reference is the only trusted source, it is the scope** (correction ukg-sandbox/12): a
+feature, screen or control the reference does not show is removed as a whole slice (git keeps it),
+not kept from secondary sources; it returns only when a better source appears.
+
 **Never make the human relay the next step** (correction ukg-sandbox/11): during a run, before a turn
 ends, make sure a wake source is armed (a background agent, task or Monitor that will notify) and continue
 on its notification. The `Next prompt` block below is for real stops only (blocked on the human, or DONE).
