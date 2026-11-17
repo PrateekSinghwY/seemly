@@ -18,7 +18,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { Graph } from "../graph.mjs";
-import { NeverOpen, RequestClassifier, classify, sessionEndingUrl } from "../safety.mjs";
+import { NeverOpen, RequestClassifier, classify, nameVerdict, sessionEndingUrl } from "../safety.mjs";
 import { save as saveGraph } from "../store.mjs";
 import { start } from "./fixture/site.mjs";
 
@@ -270,4 +270,16 @@ test("session end: a route that lands on #/logout stops the walk; the next walk 
   } finally {
     w.server.close();
   }
+});
+
+// Correction ukg-sandbox/09: an employee Home broke because its pay-period reads were aborted.
+test("a read verb first reads even with a domain noun like pay; query-shaped bodies read", () => {
+  assert.equal(nameVerdict("/timekeeping/getPayPeriodDateList").verdict, "read");
+  assert.equal(nameVerdict("/timekeeping/getAndDeletePunch").verdict, "write");
+  const c = new RequestClassifier({ readPosts: "auto" });
+  const load = c.classify({ method: "POST", url: "https://ref.example/timekeeping/employeePayCodes", postData: '{"where":{},"multiReadOptions":{},"select":["TOTALS"]}', phase: "load" });
+  assert.equal(load.verdict, "read");
+  const action = c.classify({ method: "POST", url: "https://ref.example/timekeeping/employeeCodes", postData: '{"where":{"a":1},"select":["X"],"multiReadOptions":{}}' });
+  assert.equal(action.verdict, "read");
+  assert.equal(c.classify({ method: "POST", url: "https://ref.example/payments/pay", postData: "{}" }).verdict, "write");
 });

@@ -140,7 +140,7 @@ const QUERY_KEYS = new Set([
   "page", "pagesize", "pageindex", "pagenumber", "pagenum", "per", "perpage", "size", "offset", "limit", "top", "skip", "cursor",
   "after", "before", "sort", "sortby", "sortfield", "sortorder", "order", "orderby", "direction", "filter", "filters", "where",
   "query", "q", "search", "searchtext", "searchterm", "term", "keyword", "keywords", "criteria", "fields", "select", "columns",
-  "include", "expand", "from", "to", "start", "end", "startdate", "enddate", "date", "dates", "daterange", "datespan", "span",
+  "include", "expand", "multireadoptions", "from", "to", "start", "end", "startdate", "enddate", "date", "dates", "daterange", "datespan", "span",
   "timeframe", "ids", "count", "status", "type", "types", "locale", "lang", "tz", "timezone", "view", "context", "scope",
 ]);
 /** Analytics and logging beacons: never sent, never a write, never a pending row. */
@@ -190,7 +190,7 @@ export const CLEAR_WRITE_WORDS = new Set([
   "create", "add", "insert", "update", "edit", "modify", "patch", "put", "set", "save", "delete", "remove", "destroy", "purge",
   "clear", "reset", "restore", "submit", "apply", "approve", "reject", "refuse", "signoff", "commit", "import", "upload",
   "execute", "send", "cancel", "publish", "unpublish", "lock", "unlock", "archive", "assign", "unassign", "invite", "transfer",
-  "pay", "logout", "logoff", "signout", "merge", "rename", "enable", "disable", "toggle", "trigger", "accept", "decline",
+  "logout", "logoff", "signout", "merge", "rename", "enable", "disable", "toggle", "trigger", "accept", "decline",
   "register", "subscribe", "unsubscribe", "vote", "generate", "sync", "write", "persist", "upsert", "replace", "duplicate",
   "clone", "punch", "checkout", "purchase", "buy", "refund",
 ]);
@@ -236,6 +236,9 @@ export function nameVerdict(path) {
   const lastToks = tokens(last);
   if (segs.some((s) => tokens(s).some((t) => TELEMETRY.has(t)))) return { verdict: "telemetry", why: "analytics or logging beacon" };
   if (/(^|[_-])(multi_?)?reads?$/i.test(last)) return { verdict: "read", why: `"${last}" names a read` };
+  // A last segment that starts with a read verb reads, unless it also holds a clear write word
+  // (`getPayPeriodDateList` reads; "pay" there is a noun, correction ukg-sandbox/09).
+  if (READ_VERBS.has(lastToks[0]) && !lastToks.some((t) => CLEAR_WRITE_WORDS.has(t))) return { verdict: "read", why: `"${last}" starts with "${lastToks[0]}"` };
   const w = segs.map((s) => hasWrite(tokens(s))).find(Boolean);
   if (w) return { verdict: "write", why: `"${w}" in the path` };
   const r = readWordIn(lastToks) ?? segs.slice(0, -1).map((s) => readWordIn(tokens(s), { verbsOnly: true })).find(Boolean);
