@@ -38,7 +38,7 @@ const RUN = join(here, "run.mjs");
 const EXPORT = join(dirname(here), "lib", "export-login.mjs");
 const DONE = new Set(["closed", "gap", "bounded", "built", "verified"]);
 // Flags supervise owns; every other flag goes to explore unchanged.
-const OWN = { chunk: 1, poll: 1, "min-cookies": 1, "max-wait": 1, state: 1, "login-cdp": 1, domain: 1, "check-url": 1, workers: 1, "relogin-wait": 1 };
+const OWN = { "require-text": 1, chunk: 1, poll: 1, "min-cookies": 1, "max-wait": 1, state: 1, "login-cdp": 1, domain: 1, "check-url": 1, workers: 1, "relogin-wait": 1 };
 
 export function parse(argv) {
   const own = {};
@@ -84,7 +84,17 @@ function run(args, { env, onLine = () => {} } = {}) {
  * headless page with that storage state opens `url` and must not be a sign-in page or a
  * session-ended notice. Returns { valid, why }.
  */
-export async function checkLogin(stateFile, { url, minCookies = 1, loginPattern = null } = {}) {
+/**
+ * A session can be valid and still be the wrong one: a sign-in that ends a proxy or role switch
+ * lands as the base user (correction ukg-sandbox/10). `--require-text` names text the check page
+ * must show (e.g. "Acting as"); without it the walk stops rather than walk as someone else.
+ */
+export function wrongSession(bodyText, requireText) {
+  if (!requireText) return null;
+  return String(bodyText ?? "").includes(requireText) ? null : `the page does not show "${requireText}" (signed in as another user or role?)`;
+}
+
+export async function checkLogin(stateFile, { url, minCookies = 1, loginPattern = null, requireText = null } = {}) {
   let n = 0;
   try {
     n = JSON.parse(readFileSync(stateFile, "utf8")).cookies?.length ?? 0;
@@ -101,6 +111,8 @@ export async function checkLogin(stateFile, { url, minCookies = 1, loginPattern 
     await page.waitForLoadState("networkidle", { timeout: 5000 }).catch(() => {});
     const st = await page.evaluate(sessionState, { loginSrc: loginPattern });
     if (st.login || st.ended || st.transient) return { valid: false, why: `${st.why} at ${st.href}` };
+    const wrong = wrongSession(await page.locator("body").innerText().catch(() => ""), requireText);
+    if (wrong) return { valid: false, wrong: true, why: `${wrong} at ${st.href}` };
     return { valid: true, why: `reached ${st.href}` };
   } catch (e) {
     return { valid: false, why: e.message.split("\n")[0] };
@@ -248,7 +260,11 @@ export async function main(argv) {
       // have run export-login by hand). Either one counts only once a real page proves it.
       const ex = await run([EXPORT, "--cdp", loginCdp, "--domain", domain, "--out", candidate]);
       for (const file of ex.code === 0 ? [candidate, stateFile] : [stateFile]) {
-        const c = await checkLogin(file, { url: checkUrl, minCookies, loginPattern });
+        const c = await checkLogin(file, { url: checkUrl, minCookies, loginPattern, requireText: own["require-text"] ?? null });
+        if (c.wrong) {
+          log(`STOPPED wrong session: ${c.why}. Restore it (e.g. re-enter the proxy), then supervise again`);
+          return false;
+        }
         if (c.valid) {
           if (file === candidate) renameSync(candidate, stateFile);
           log(`SIGNED IN (${c.why}); waited since ${since}; requeue --gaps and resume`);

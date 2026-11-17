@@ -55,6 +55,25 @@ export const RETRIES = 3;
 export const BACKOFF_MS = 1500;
 
 export class SessionLost extends Error {}
+
+/**
+ * The pages a walk owns: the tabs it opened and their popups. Over CDP the context is a person's
+ * window, so the request guard must leave every other tab alone (correction ukg-sandbox/10: the
+ * guard blocked a second agent's saves in its own tab).
+ */
+export class OwnedPages {
+  #pages = new WeakSet();
+  adopt(p) {
+    if (!p || this.#pages.has(p)) return p;
+    this.#pages.add(p);
+    p.on?.("popup", (q) => this.adopt(q));
+    return p;
+  }
+  /** A request from a page this walk does not own is not the walk's to judge. */
+  foreign(p) {
+    return Boolean(p) && !this.#pages.has(p);
+  }
+}
 /**
  * A navigation that signed the session out (it landed on a logout-like URL). `target` is the URL
  * that was opened; it is in never-open.jsonl before this is thrown. A SessionLost, so the run
@@ -272,12 +291,14 @@ export async function explore(g, dir, opts = {}) {
     appendFileSync(errorsPath, JSON.stringify(row) + "\n");
     g.signal("walker.error", { node: current.node, element: current.element, kind, detail: String(detail ?? "").slice(0, 300) });
   };
+  const owned = new OwnedPages();
   await context.route("**/*", (route) => {
     const req = route.request();
     let from = null;
     try {
       from = req.frame().page();
     } catch {}
+    if (owned.foreign(from)) return route.fallback();
     if (req.isNavigationRequest() && never.match(req.url())) {
       net.refused.push(req.url());
       return route.abort("blockedbyclient");
@@ -329,8 +350,8 @@ export async function explore(g, dir, opts = {}) {
     });
   }
 
-  const page = context.pages()[0] ?? (await context.newPage());
-  const side = await context.newPage();
+  const page = owned.adopt(context.pages()[0] ?? (await context.newPage()));
+  const side = owned.adopt(await context.newPage());
   for (const p of [page, side]) {
     phase.set(p, "load");
     p.on("framenavigated", (f) => {
@@ -424,7 +445,7 @@ export async function explore(g, dir, opts = {}) {
   async function sessionAlive() {
     const entry = Object.values(g.data.nodes).find((n) => n.entry);
     if (!entry) return false;
-    const t = await context.newPage();
+    const t = owned.adopt(await context.newPage());
     try {
       await t.goto(entry.href ?? entry.url, { waitUntil: "domcontentloaded", timeout: 30000 });
       await settle(t);

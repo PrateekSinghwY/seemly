@@ -20,7 +20,7 @@
 //                                                                  `unfired: budget` and the node closes partial (requeue --partial)
 //             [--save-every N] [--save-every-s N]                  save graph.json inside a node every N fired elements / N s (20 / 60)
 //     supervise [explore flags] [--chunk N] [--poll 30] [--min-cookies 1] [--max-wait <min>] [--state <file>]
-//               [--login-cdp <url>] [--domain <site>] [--check-url <url>]
+//               [--login-cdp <url>] [--domain <site>] [--check-url <url>] [--require-text "Acting as"]
 //                                     explore in chunks to frontier 0; on a lost login waits, re-exports the
 //                                     login once a headless page proves it, requeues gaps, resumes (supervise.mjs)
 //     visit <url>                                                  add one more entry page
