@@ -52,9 +52,9 @@ never open PRs.
 **Self-directed next prompt** (correction ukg-sandbox/12): show the `Next prompt`, then act on it
 yourself at once, as if it had been sent; the human never pastes it back.
 
-**When the reference is the only trusted source, it is the scope** (correction ukg-sandbox/12): a
-feature, screen or control the reference does not show is removed as a whole slice (git keeps it),
-not kept from secondary sources; it returns only when a better source appears.
+**Scope cuts wait for the owner's timing** (correction ukg-sandbox/12): a cut to "only what the
+reference shows" removes whole slices, so it runs only when the owner says (e.g. after open PRs
+merge), never mid-run on a first remark; inventory first, then remove.
 
 **Never make the human relay the next step** (correction ukg-sandbox/11): during a run, before a turn
 ends, make sure a wake source is armed (a background agent, task or Monitor that will notify) and continue
