@@ -49,6 +49,10 @@ errors go to the panel only when the human asks for consensus thinking. Never as
 push approval: push to the `feat/*` branch yourself after every slice, never to main,
 never open PRs.
 
+**Never make the human relay the next step** (correction ukg-sandbox/11): during a run, before a turn
+ends, make sure a wake source is armed (a background agent, task or Monitor that will notify) and continue
+on its notification. The `Next prompt` block below is for real stops only (blocked on the human, or DONE).
+
 **Every message that ends a turn, and every snag reported, ends with a `Next prompt` block**
 (correction ukg-sandbox/10): one complete prompt the human can send as is (accept and send), naming
 the next step, the files or captures it works from, and the done condition. A stop without it
