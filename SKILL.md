@@ -49,6 +49,17 @@ errors go to the panel only when the human asks for consensus thinking. Never as
 push approval: push to the `feat/*` branch yourself after every slice, never to main,
 never open PRs.
 
+**Every message that ends a turn, and every snag reported, ends with a `Next prompt` block**
+(correction ukg-sandbox/10): one complete prompt the human can send as is (accept and send), naming
+the next step, the files or captures it works from, and the done condition. A stop without it
+makes the human write the next instruction themselves.
+
+**A Playwright blocker moves that step to Claude in Chrome at once, unasked** (correction
+ukg-sandbox/10): a walker stuck or closing nodes as gaps, a page that breaks under the guard, a
+control it cannot fire, a login it cannot see. Do the step in Chrome, log it in
+`discovery/tool-fallbacks.md`, fix the Playwright weak link per section 0.45, and go on. Never
+wait for the human to point the blocker out.
+
 Control words, and only these, are commands: `resume`, `done`, `approved`, `STATUS`
 (print the six-line block from section 9, keep working), `STOP` (finish the atomic step,
 halt), `distill`, `promote`. **Every other message the human sends mid-run is a
