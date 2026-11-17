@@ -523,6 +523,14 @@ Safety is mechanical (`scripts/orchestrator/safety.mjs`, tests in `test/safety-d
 
 `explore` exiting 3 means the login was lost: print `BLOCKED` (environment changed).
 
+**"Every click" includes every Save click** (correction ukg-sandbox/09). A walk is not done while a
+Save, Submit, Apply or Add on a record the run owns (a record it created, its own cast employees,
+its own tag or dataview) sits unfired in `pending-writes.jsonl`. Fire it, capture the UI before
+and after plus the call and its response, undo it, log the undo in `DIRTIED.md`, and close it with
+a row in `saves-done.jsonl`; `O report` lists every save still open and the report is not clean
+while one is. A tool's own read-only guard is never a reason to report a feature "BLOCKED": check
+the capture first (a guard that aborts requests by name can hide the very control asked for).
+
 You keep the judgment the walker cannot make, in Claude in Chrome:
 - every row of `pending-writes.jsonl` that the build needs is a write to capture: **the first
   write of each kind on the reference is a `BLOCKED` (irreversible action)**. Restoring a write

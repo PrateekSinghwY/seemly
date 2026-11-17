@@ -562,6 +562,32 @@ const PAIRED_BY = { map: "pair map", key: "same view key", fuzzy: "**fuzzy pair:
  * node -> each check -> reason, then every ref-only node with its reason. With `pairMap`
  * (readPairMap), the pairs are first rebuilt from the walks pairs.json names and saved.
  */
+// ---------- save clicks (correction ukg-sandbox/09: "every click" includes every Save click) ----------
+
+const SAVE_NAME = /\b(save|submit|apply|ok|done|add|create|update|share|post|send)\b/i;
+
+/**
+ * Save clicks the reference walk aborted (`kind: "write"` rows of pending-writes.jsonl whose
+ * element reads as a save) that no `saves-done.jsonl` row in the same dir closes. A save on a
+ * record the run owns is part of "every click": fire it, capture the UI before and after and the
+ * call, undo it, then append `{"key": <row key>, "undo": "...", "capture": "<dir>"}`.
+ * A row a person ruled out appends `{"key", "skip": "<reason>"}` instead.
+ */
+export function openSaves(refDirs) {
+  const rows = (f) => (existsSync(f) ? readFileSync(f, "utf8").split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean) : []);
+  const open = [];
+  for (const dir of [refDirs].flat().filter(Boolean)) {
+    const done = new Set(rows(join(dir, "saves-done.jsonl")).map((r) => r.key));
+    const seen = new Set();
+    for (const r of rows(join(dir, "pending-writes.jsonl"))) {
+      if (r.kind !== "write" || !SAVE_NAME.test(r.element?.name ?? "") || done.has(r.key) || seen.has(r.key)) continue;
+      seen.add(r.key);
+      open.push({ dir, key: r.key, label: r.label ?? "", name: r.element.name, url: r.url ?? "" });
+    }
+  }
+  return open;
+}
+
 export function report(cloneDir, scope, { pairMap = null } = {}) {
   let doc = readPairs(cloneDir);
   if (!doc) throw new Error(`no pairs.json in ${cloneDir}: run compare or verify first`);
@@ -592,6 +618,12 @@ export function report(cloneDir, scope, { pairMap = null } = {}) {
   }
   L.push("", "## Reference only: what the clone does not have", "", "| reference node | kind | view | status | reason |", "|---|---|---|---|---|");
   for (const p of s.refOnly) L.push(`| ${esc(p.ref.label)} \`${p.ref.id}\` | ${p.kind} | \`${esc(p.key)}\` | ${p.status} | ${esc(p.reason)} |`);
+  const saves = openSaves(doc.ref);
+  L.push("", `## Save clicks not yet fired on the reference: ${saves.length}`, "", saves.length ? "Every click includes every Save on a record the run owns: fire it, capture before and after, undo, and close it in saves-done.jsonl. The report is not clean while any stays open." : "None open.");
+  if (saves.length) {
+    L.push("", "| reference view | control | key |", "|---|---|---|");
+    for (const r of saves) L.push(`| ${esc(r.label)} | ${esc(r.name)} | \`${r.key}\` |`);
+  }
   if (s.cloneOnly.length) {
     L.push("", "## Clone only: surfaces the reference walk never reached", "", "| clone node | kind | view |", "|---|---|---|");
     for (const p of s.cloneOnly) L.push(`| ${esc(p.clone.label)} \`${p.clone.id}\` | ${p.kind} | \`${esc(p.key)}\` |`);
