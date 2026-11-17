@@ -24,3 +24,12 @@ test("a valid session without the required text is the wrong session", () => {
   assert.match(wrongSession("Home My time off Tile 1 of 9", "Acting as"), /does not show/);
   assert.equal(wrongSession("anything", null), null);
 });
+
+import { classify, holdNames } from "../safety.mjs";
+test("SEEMLY_HOLD_NAMES holds the named controls, nothing else", () => {
+  const hold = holdNames({ SEEMLY_HOLD_NAMES: "^(Dismiss|Change)$" });
+  assert.equal(classify({ name: "Dismiss" }, hold).verdict, "never");
+  assert.equal(classify({ name: " Change " }, hold).verdict, "never");
+  assert.equal(classify({ name: "Change Picture" }, hold).verdict, "ok");
+  assert.equal(classify({ name: "Dismiss" }, null).verdict, "ok");
+});

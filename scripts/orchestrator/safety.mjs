@@ -92,9 +92,21 @@ export const WRITE_VERB = words(["save", "apply", "submit", "confirm", "sync( no
  * `choice: true` marks a money-word choice inside a picker: the walker fires it and keeps the
  * edge when only reads went out (explore.mjs).
  */
-export function classify({ name = "", href = "", role = "", inPicker = false }) {
+/**
+ * Names this walk must never click, from SEEMLY_HOLD_NAMES (a regex): controls that end or switch
+ * a proxy or role session ("Dismiss" and "Change" on a Proxy Into User banner ended the proxy
+ * mid-walk, correction ukg-sandbox/10). Held like NEVER names: a pending row, never fired.
+ */
+export function holdNames(env = process.env) {
+  const src = env.SEEMLY_HOLD_NAMES;
+  if (!src) return null;
+  try { return new RegExp(src, "i"); } catch { return null; }
+}
+
+export function classify({ name = "", href = "", role = "", inPicker = false }, hold = holdNames()) {
   name ??= "";
   if (NEVER.test(name) || (href && NEVER_HREF.test(href))) return { verdict: "never", why: "ends the session or the account" };
+  if (hold && hold.test(name.trim())) return { verdict: "never", why: `held by SEEMLY_HOLD_NAMES (${hold.source})` };
   const del = name.match(RISKY_DELETE);
   if (del) return { verdict: "risky", why: `name reads as deletion or messaging: "${del[0]}"` };
   const money = moneyAction(name);

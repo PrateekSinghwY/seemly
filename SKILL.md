@@ -54,6 +54,10 @@ never open PRs.
 the next step, the files or captures it works from, and the done condition. A stop without it
 makes the human write the next instruction themselves.
 
+**A walk inside a proxy or role switch holds the controls that end it**: run it with
+`SEEMLY_HOLD_NAMES='^(Dismiss|Change)$'` (or the app's own names) and `supervise --require-text
+"<banner text>"`, so the walker never clicks out of the session and stops if the session changes.
+
 **A Playwright blocker moves that step to Claude in Chrome at once, unasked** (correction
 ukg-sandbox/10): a walker stuck or closing nodes as gaps, a page that breaks under the guard, a
 control it cannot fire, a login it cannot see. Do the step in Chrome, log it in
