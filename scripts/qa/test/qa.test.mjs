@@ -157,6 +157,27 @@ test("human_eye: a page that fails to load is a finding, and the run goes on", {
   }
 });
 
+// 2026-11-23 (UKG): with --dead-controls, a reset reload that failed threw out of the loop and the
+// run ended. The page gets a dead-check-failed finding and the next URL is still checked.
+test("human_eye: a dead-control reset that fails is a finding, and the run goes on", { skip, timeout: 300_000 }, async () => {
+  const ref = await serve(site(REF));
+  let hits = 0;
+  const flaky = await serve((req, res) => {
+    hits += 1;
+    if (hits === 1) { res.writeHead(200, { "content-type": "text/html" }); res.end("<main><button>Go</button></main>"); return; }
+    req.socket.destroy();
+  });
+  const cwd = mkdtempSync(join(tmpdir(), "qa-"));
+  try {
+    const r = await run("human_eye.mjs", ["--dead-controls", "--url", `${flaky.base}/x`, "--url", `${ref.base}/rates`], cwd);
+    assert.match(r.out, /dead-check-failed|load-failed/);
+    assert.match(r.out, new RegExp(`${ref.base}/rates`));
+  } finally {
+    ref.server.close();
+    flaky.server.close();
+  }
+});
+
 // 2026-11-17 (UKG): a visually hidden "Skip to main content" link that moves focus to <main> was
 // reported dead: the click could not hit it, and a focus move was not counted as an effect.
 const FOCUS = page(`<a href="#q" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)"

@@ -82,7 +82,14 @@ try {
     }
     await settle(page);
     let f = [...(await page.evaluate(inspect)), ...(await unnamed(page))];
-    if (o["dead-controls"]) f.push(...(await deadControls(page, { reset: reloadTo(url) })));
+    if (o["dead-controls"]) {
+      // One reset that never reloads must not end the run for every later URL (2026-11-23).
+      try {
+        f.push(...(await deadControls(page, { reset: reloadTo(url) })));
+      } catch (e) {
+        f.push({ kind: "dead-check-failed", detail: String(e.message ?? e).split("\n")[0], where: url });
+      }
+    }
     f = f.filter((x) => !allowed(x));
     writeFileSync(join(outDir, `${slug(url)}.json`), JSON.stringify(f, null, 1));
     total += f.length;

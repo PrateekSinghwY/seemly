@@ -373,7 +373,19 @@ export async function deadControls(page, { reset, scopeCss = null } = {}) {
 
 /** Reset for a page reached by URL: reload it and let it settle. */
 export const reloadTo = (url) => async (page) => {
-  await page.goto(url, { waitUntil: "domcontentloaded" });
+  // A dev server can take well over 30 s to answer a reload; retry before giving up (2026-11-23).
+  let error = null;
+  for (let i = 0; i < 3; i++) {
+    try {
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 90_000 });
+      error = null;
+      break;
+    } catch (e) {
+      error = e;
+      await page.waitForTimeout(2000 * (i + 1));
+    }
+  }
+  if (error) throw error;
   await settle(page, 4000);
   return null;
 };
