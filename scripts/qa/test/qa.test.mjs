@@ -140,6 +140,23 @@ test("human_eye: stand-in image, clipped text, unnamed and dead controls, overfl
   }
 });
 
+// 2026-11-23 (UKG): one page that never loads (a dev route stuck compiling) threw out of the loop and
+// every later URL went unchecked. It must be a load-failed finding, and the next URL still checked.
+test("human_eye: a page that fails to load is a finding, and the run goes on", { skip, timeout: 300_000 }, async () => {
+  const ref = await serve(site(REF));
+  const dead = await serve((req, res) => { res.writeHead(500); res.end("boom"); });
+  const cwd = mkdtempSync(join(tmpdir(), "qa-"));
+  try {
+    const r = await run("human_eye.mjs", ["--url", `${dead.base}/x`, "--url", `${ref.base}/rates`], cwd);
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /load-failed\s+HTTP 500/);
+    assert.match(r.out, new RegExp(`✓ ${ref.base}/rates`));
+  } finally {
+    ref.server.close();
+    dead.server.close();
+  }
+});
+
 // 2026-11-17 (UKG): a visually hidden "Skip to main content" link that moves focus to <main> was
 // reported dead: the click could not hit it, and a focus move was not counted as an effect.
 const FOCUS = page(`<a href="#q" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)"

@@ -54,9 +54,32 @@ const outDir = join(DISCOVERY, "qa", "human-eye");
 mkdirSync(outDir, { recursive: true });
 let total = 0;
 let images = 0;
+async function gotoWithRetry(pg, url, tries = 3) {
+  let last = "";
+  for (let i = 0; i < tries; i++) {
+    try {
+      const res = await pg.goto(url, { waitUntil: "domcontentloaded", timeout: 90_000 });
+      if (res && res.status() >= 500) last = `HTTP ${res.status()}`;
+      else return null;
+    } catch (e) {
+      last = String(e.message ?? e).split("\n")[0];
+    }
+    await pg.waitForTimeout(2000 * (i + 1));
+  }
+  return last;
+}
 try {
   for (const url of o.url) {
-    await page.goto(url, { waitUntil: "domcontentloaded" });
+    // A dev server compiles a route on first visit and can take well over 30 s; one slow or broken
+    // page must not end the run for every URL after it (2026-11-23: 206 setup pages, died at #57).
+    const loadError = await gotoWithRetry(page, url);
+    if (loadError) {
+      const f = [{ kind: "load-failed", detail: loadError, where: url }];
+      writeFileSync(join(outDir, `${slug(url)}.json`), JSON.stringify(f, null, 1));
+      total += 1;
+      console.log(`✗ ${url}  1 finding(s)\n    load-failed      ${loadError}`);
+      continue;
+    }
     await settle(page);
     let f = [...(await page.evaluate(inspect)), ...(await unnamed(page))];
     if (o["dead-controls"]) f.push(...(await deadControls(page, { reset: reloadTo(url) })));
