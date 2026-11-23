@@ -286,6 +286,9 @@ export function inspect({ scopeCss = null } = {}) {
           }
         }
         if (LAYER_ROLES.has(e.getAttribute("role")) || /absolute|fixed|sticky/.test(cs.position)) break;
+        // A cell spanning rows is bounded by itself, not by the first row it starts in (2026-11-24:
+        // a rowSpan=2 header read as spilling past its 21px row).
+        if ((e.tagName === "TD" || e.tagName === "TH") && e.rowSpan > 1) break;
       }
     }
     return out;

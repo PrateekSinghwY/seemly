@@ -178,6 +178,21 @@ test("human_eye: a dead-control reset that fails is a finding, and the run goes 
   }
 });
 
+// 2026-11-24 (UKG): a header cell spanning two 21px rows was reported as spilling past the first row.
+test("human_eye: text in a row-spanning cell is not a spill", { skip, timeout: 300_000 }, async () => {
+  const html = `<!doctype html><html lang="en"><head><title>t</title></head><body><main><table style="border-collapse:collapse">
+<thead><tr style="height:21px"><th rowspan="2" style="height:42px;vertical-align:middle">Name</th><th colspan="2">In-punch</th></tr>
+<tr style="height:21px"><th>Early</th><th>Late</th></tr></thead><tbody><tr><td>A</td><td>1</td><td>2</td></tr></tbody></table></main></body></html>`;
+  const app = await serve((req, res) => { res.writeHead(200, { "content-type": "text/html" }); res.end(html); });
+  const cwd = mkdtempSync(join(tmpdir(), "qa-"));
+  try {
+    const r = await run("human_eye.mjs", ["--url", `${app.base}/t`], cwd);
+    assert.doesNotMatch(r.out, /text-spill/, r.out);
+  } finally {
+    app.server.close();
+  }
+});
+
 // 2026-11-17 (UKG): a visually hidden "Skip to main content" link that moves focus to <main> was
 // reported dead: the click could not hit it, and a focus move was not counted as an effect.
 const FOCUS = page(`<a href="#q" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)"
