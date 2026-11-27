@@ -66,6 +66,11 @@ headed window and re-runs `export-login` to the same file; the walk resumes by i
 write the walker meets is aborted and queued in `pending-writes.jsonl`: that file is the
 checklist for phase 3, not something to fire from the walker.
 
+**Demo account** (`reference/decisions.md` "Demo account"): add `--demo-account` to the walk
+instead. The walker fires every write itself and there is no phase 3 waiting on people; any flow
+the walker cannot drive (multi-step forms, typed values) the agent drives itself in Chrome or a
+Playwright script, recording calls the same way.
+
 ## 3. Write sessions (people drive, the recorder captures)
 
 ```bash

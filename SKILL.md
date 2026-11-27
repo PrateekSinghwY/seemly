@@ -32,8 +32,8 @@ type. So you write to the human in exactly four cases, and no others:
 
 1. `PREFLIGHT FAILED` with the one thing to fix (section 1).
 2. `BLOCKED` for one of three reasons only: an irreversible or paid action is about to
-   fire (including the first write of each kind on the reference, section 4); a
-   credential or account you do not have; the environment changed under you (edition,
+   fire (including the first write of each kind on the reference, section 4; never on a
+   **demo account**, below); a credential or account you do not have; the environment changed under you (edition,
    login state, VPN). Print the block from section 9 and wait for `resume`.
 3. `SESSION CHECKPOINT` when context runs low: finish the atomic step, write
    `discovery/RESUME.md`, print the one resume line, stop.
@@ -48,6 +48,19 @@ three independent agents, a judge, escalation only on its listed triggers. PR co
 errors go to the panel only when the human asks for consensus thinking. Never ask. Never report progress. Never wait for a
 push approval: push to the `feat/*` branch yourself after every slice, never to main,
 never open PRs.
+
+**Demo account: every action is allowed** (owner ruling 2026-11-27). When the reference is a demo,
+trial or sandbox account given for building (the intake or the human says so, or
+`SEEMLY_DEMO_ACCOUNT=1` is set), no write and no risky action is ever a `BLOCKED` or a
+pending-writes row for a human: fire it yourself, capture it, undo what can be undone, log it in
+`DIRTIED.md`. Walk with `explore --demo-account` (fires every write and risky name; sign-out and
+account-closing names stay held). Sign in again yourself when signed out. Only a locked or deleted
+account is a blocker.
+
+**Schema skeleton before the first unit** (owner ruling 2026-11-27): right after the sitemap, design
+the whole database for every module, including modules whose screens are not built yet, per
+`reference/backend.md` "Schema skeleton first". Units then build on fixed tables instead of
+reworking early screens when the schema arrives late.
 
 **Self-directed next prompt** (correction ukg-sandbox/12): show the `Next prompt`, then act on it
 yourself at once, as if it had been sent; the human never pastes it back.

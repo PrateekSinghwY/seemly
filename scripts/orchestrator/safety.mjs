@@ -103,6 +103,20 @@ export function holdNames(env = process.env) {
   try { return new RegExp(src, "i"); } catch { return null; }
 }
 
+/**
+ * Demo-account walk (`explore --demo-account` or SEEMLY_DEMO_ACCOUNT=1): the reference is a demo
+ * or trial account the owner gave for building, so every write and every risky name is fired and
+ * captured instead of being aborted or held for a human (owner ruling 2026-11-27: sessions stalled
+ * waiting on write approvals). NEVER names and SEEMLY_HOLD_NAMES still hold: signing out or
+ * closing the account ends the walk itself, not a capture.
+ */
+export function demoAccountWalk({ demo = false, risky = "record", allowPost = [] } = {}, env = process.env) {
+  const on = demo || /^(1|true|yes)$/i.test(env.SEEMLY_DEMO_ACCOUNT ?? "");
+  if (!on) return { demo: false, risky, allowPost };
+  const all = allowPost.some((re) => re.source === ".*") ? allowPost : [...allowPost, /.*/];
+  return { demo: true, risky: "probe", allowPost: all };
+}
+
 export function classify({ name = "", href = "", role = "", inPicker = false }, hold = holdNames()) {
   name ??= "";
   if (NEVER.test(name) || (href && NEVER_HREF.test(href))) return { verdict: "never", why: "ends the session or the account" };

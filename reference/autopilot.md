@@ -42,7 +42,18 @@ corrections. Then pick the start:
   - A write on records the run itself creates is captured, then undone. Log it with its undo in
     `DIRTIED.md`.
   - A write on existing shared data goes to `pending-writes` for a human ruling.
+  - **Demo account:** walk with `--demo-account`; every write and risky name fires, nothing waits
+    for a ruling (SKILL.md section 0, "Demo account").
 - **Exit:** frontier 0, every gap has a non-retryable reason, and the per-node invariant holds.
+
+## 2.5 Sitemap and schema skeleton (in parallel with the walk)
+
+- **Sitemap:** every nav entry, submenu, settings tree, tab, row-detail page and form overlay,
+  with its route, load-time API calls and main entity, in `docs/SITEMAP.md`. Every entry page
+  seeds the walk (`O init --entry`).
+- **Schema skeleton:** the whole database for every sitemap module, per `backend.md` "Schema
+  skeleton first", migrated and seeded before step 5 starts.
+- **Exit:** every sitemap module has its tables; `pnpm reset` (or the repo's equivalent) runs clean.
 
 ## 3. Judge what the walker cannot (tool: Claude in Chrome)
 

@@ -4,6 +4,25 @@ The full method is `method/RL_BUILD.prompt.md` Part 5 steps 4 to 7 and Part 5A, 
 target repo's `AGENTS.md` wins on stack. This file is the compressed contract the skill
 enforces on every build.
 
+## Schema skeleton first
+
+Before the first build unit, the whole database exists: every entity of every module in the
+sitemap, including modules whose screens are not built yet, so later units add rows and endpoints,
+not tables. Sources in order: captured payloads, the product's public API or data dictionary, what
+the screens show; each table's source recorded. Required:
+- one table per real entity, named and shaped after the reference's API; no near-duplicate tables
+  (a column or discriminator instead of a parallel table);
+- the reference's id format; a real foreign key with a declared delete behaviour on every reference;
+- an index on every foreign key and every filtered, sorted or joined column, composite indexes
+  equality first; unique constraints where the domain has them;
+- NOT NULL where the reference always has a value, check constraints on enums and ranges,
+  `created_at` and `updated_at` in UTC on growing tables;
+- money as integer minor units or decimal, never float; durations in one stated unit;
+- each table marked growing or bounded, growing ones paged by keyset;
+- SQLite: WAL, foreign keys on, busy timeout;
+- one linear migration chain that resets clean, and a realistic synthetic seed for every table.
+Payload harvesting below still refines each table as the walk reaches its screens.
+
 ## Schema comes from payloads, never from memory
 
 - Step 4 of the loop harvests every request and response body and the client store

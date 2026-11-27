@@ -4,7 +4,7 @@
 //
 //   explore phase
 //     init --target <url> [--prefix /path]... [--entry <url>]... [--entries-from <file>]  create the graph from entry pages
-//     explore [--max-nodes N] [--risky record|probe] [--allow-post <regex>]... [--read-posts off|auto]
+//     explore [--max-nodes N] [--risky record|probe] [--allow-post <regex>]... [--demo-account] [--read-posts off|auto]
 //             [--pace <ms>] [--relogin-wait <minutes>] [--sample K] [--only-prefix /area]...
 //             [--ws-guard block|off] [--retries N] [--backoff-ms N] [--login-pattern <regex>]
 //             [--widths 1024,1280,...|off]                         label widths saved per node for verify
@@ -75,6 +75,7 @@ import { compare, pairNodes, readPairMap, toMarkdown } from "./compare.mjs";
 import { dedupeClicks, dedupeRows } from "./bound.mjs";
 import { breadcrumbFromAria, edgeId, isRetryableReason, tagScopes } from "./graph.mjs";
 import { open, save } from "./store.mjs";
+import { demoAccountWalk } from "./safety.mjs";
 import { countsLine, mergeVerifyRecords, parseShard, report, verify, verifyCounts, writePairs } from "./verify.mjs";
 import { writeLive, writeTree } from "./views.mjs";
 import { acquire } from "./walk-lock.mjs";
@@ -119,6 +120,7 @@ const { values: o, positionals } = parseArgs({
     entry: { type: "string", multiple: true, default: [] },
     "max-nodes": { type: "string" },
     risky: { type: "string", default: "record" },
+    "demo-account": { type: "boolean", default: false },
     "allow-post": { type: "string", multiple: true, default: [] },
     "read-posts": { type: "string", default: "off" },
     pace: { type: "string" },
@@ -348,6 +350,9 @@ switch (cmd) {
     const waitMin = o["relogin-wait"] ? +o["relogin-wait"] : 0;
     const stateFile = process.env.SEEMLY_STORAGE_STATE;
     let maxNodes = o["max-nodes"] ? +o["max-nodes"] : Infinity;
+    // --demo-account / SEEMLY_DEMO_ACCOUNT=1: every write and risky name fires (safety.mjs demoAccountWalk).
+    const demo = demoAccountWalk({ demo: o["demo-account"], risky: o.risky, allowPost: o["allow-post"].map((s) => new RegExp(s)) });
+    if (demo.demo) say("demo account: every write and risky name is fired and captured; sign-out names stay held. Log each write and its undo in DIRTIED.md");
     // walk.lock while this walk writes the dir: `O relabel` refuses to run under it (walk-lock.mjs).
     const unlock = acquire(dir, "explore");
     process.once("exit", unlock);
@@ -356,8 +361,8 @@ switch (cmd) {
         const r = await explore(g, dir, {
           ...browser,
           maxNodes,
-          risky: o.risky,
-          allowPost: o["allow-post"].map((s) => new RegExp(s)),
+          risky: demo.risky,
+          allowPost: demo.allowPost,
           readPosts: o["read-posts"],
           pace: o.pace ? +o.pace : 0,
           sample: o.sample ? +o.sample : undefined,
